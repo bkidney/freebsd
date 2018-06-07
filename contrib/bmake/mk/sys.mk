@@ -1,4 +1,4 @@
-# $Id: sys.mk,v 1.44 2016/10/01 19:11:55 sjg Exp $
+# $Id: sys.mk,v 1.46 2017/11/15 22:59:23 sjg Exp $
 #
 #	@(#) Copyright (c) 2003-2009, Simon J. Gerraty
 #
@@ -71,11 +71,11 @@ SYS_OS_MK := ${_sys_mk}
 # some options we need to know early
 OPTIONS_DEFAULT_NO += \
 	DIRDEPS_BUILD \
-	DIRDEPS_CACHE \
-	META_MODE
+	DIRDEPS_CACHE
 
 OPTIONS_DEFAULT_DEPENDENT += \
 	AUTO_OBJ/DIRDEPS_BUILD \
+	META_MODE/DIRDEPS_BUILD \
 	STAGING/DIRDEPS_BUILD \
 
 .-include <options.mk>
@@ -84,7 +84,7 @@ OPTIONS_DEFAULT_DEPENDENT += \
 MK_META_MODE = yes
 .-include <meta.sys.mk>
 .elif ${MK_META_MODE:Uno} == "yes"
-.MAKE.MODE = meta verbose
+.MAKE.MODE = meta verbose ${META_MODE}
 .endif
 # make sure we have a harmless value
 .MAKE.MODE ?= normal

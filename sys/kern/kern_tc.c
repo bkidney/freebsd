@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: Beerware
+ *
  * ----------------------------------------------------------------------------
  * "THE BEER-WARE LICENSE" (Revision 42):
  * <phk@FreeBSD.ORG> wrote this file.  As long as you retain this notice you
@@ -19,7 +21,6 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#include "opt_compat.h"
 #include "opt_ntp.h"
 #include "opt_ffclock.h"
 
@@ -28,7 +29,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/limits.h>
 #include <sys/lock.h>
 #include <sys/mutex.h>
+#include <sys/proc.h>
 #include <sys/sbuf.h>
+#include <sys/sleepqueue.h>
 #include <sys/sysctl.h>
 #include <sys/syslog.h>
 #include <sys/systm.h>
@@ -125,6 +128,8 @@ SYSCTL_PROC(_kern_timecounter, OID_AUTO, alloweddeviation,
     CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, 0, 0,
     sysctl_kern_timecounter_adjprecision, "I",
     "Allowed time interval deviation in percents");
+
+volatile int rtc_generation = 1;
 
 static int tc_chosen;	/* Non-zero if a specific tc was chosen via sysctl. */
 
@@ -1261,6 +1266,26 @@ tc_getfrequency(void)
 	return (timehands->th_counter->tc_frequency);
 }
 
+static bool
+sleeping_on_old_rtc(struct thread *td)
+{
+
+	/*
+	 * td_rtcgen is modified by curthread when it is running,
+	 * and by other threads in this function.  By finding the thread
+	 * on a sleepqueue and holding the lock on the sleepqueue
+	 * chain, we guarantee that the thread is not running and that
+	 * modifying td_rtcgen is safe.  Setting td_rtcgen to zero informs
+	 * the thread that it was woken due to a real-time clock adjustment.
+	 * (The declaration of td_rtcgen refers to this comment.)
+	 */
+	if (td->td_rtcgen != 0 && td->td_rtcgen != rtc_generation) {
+		td->td_rtcgen = 0;
+		return (true);
+	}
+	return (false);
+}
+
 static struct mtx tc_setclock_mtx;
 MTX_SYSINIT(tc_setclock_init, &tc_setclock_mtx, "tcsetc", MTX_SPIN);
 
@@ -1284,6 +1309,10 @@ tc_setclock(struct timespec *ts)
 	/* XXX fiddle all the little crinkly bits around the fiords... */
 	tc_windup(&bt);
 	mtx_unlock_spin(&tc_setclock_mtx);
+
+	/* Avoid rtc_generation == 0, since td_rtcgen == 0 is special. */
+	atomic_add_rel_int(&rtc_generation, 2);
+	sleepq_chains_remove_matching(sleeping_on_old_rtc);
 	if (timestepwarnings) {
 		nanotime(&taft);
 		log(LOG_INFO,
@@ -1323,7 +1352,7 @@ tc_windup(struct bintime *new_boottimebin)
 	ogen = th->th_generation;
 	th->th_generation = 0;
 	atomic_thread_fence_rel();
-	bcopy(tho, th, offsetof(struct timehands, th_generation));
+	memcpy(th, tho, offsetof(struct timehands, th_generation));
 	if (new_boottimebin != NULL)
 		th->th_boottime = *new_boottimebin;
 
@@ -1385,10 +1414,8 @@ tc_windup(struct bintime *new_boottimebin)
 		if (bt.sec != t)
 			th->th_boottime.sec += bt.sec - t;
 	}
-	th->th_bintime = th->th_offset;
-	bintime_add(&th->th_bintime, &th->th_boottime);
 	/* Update the UTC timestamps used by the get*() functions. */
-	/* XXX shouldn't do this here.  Should force non-`get' versions. */
+	th->th_bintime = bt;
 	bintime2timeval(&bt, &th->th_microtime);
 	bintime2timespec(&bt, &th->th_nanotime);
 
@@ -1573,10 +1600,10 @@ pps_fetch(struct pps_fetch_args *fapi, struct pps_state *pps)
 			tv.tv_usec = fapi->timeout.tv_nsec / 1000;
 			timo = tvtohz(&tv);
 		}
-		aseq = pps->ppsinfo.assert_sequence;
-		cseq = pps->ppsinfo.clear_sequence;
-		while (aseq == pps->ppsinfo.assert_sequence &&
-		    cseq == pps->ppsinfo.clear_sequence) {
+		aseq = atomic_load_int(&pps->ppsinfo.assert_sequence);
+		cseq = atomic_load_int(&pps->ppsinfo.clear_sequence);
+		while (aseq == atomic_load_int(&pps->ppsinfo.assert_sequence) &&
+		    cseq == atomic_load_int(&pps->ppsinfo.clear_sequence)) {
 			if (abi_aware(pps, 1) && pps->driver_mtx != NULL) {
 				if (pps->flags & PPSFLAG_MTX_SPIN) {
 					err = msleep_spin(pps, pps->driver_mtx,

@@ -1,6 +1,6 @@
 /******************************************************************************
 
-  Copyright (c) 2013-2015, Intel Corporation 
+  Copyright (c) 2013-2017, Intel Corporation
   All rights reserved.
   
   Redistribution and use in source and binary forms, with or without 
@@ -151,6 +151,7 @@ struct i40e_osdep {
 	bus_space_handle_t	mem_bus_space_handle;
 	bus_size_t		mem_bus_space_size;
 	uint32_t		flush_reg;
+	int			i2c_intfc_num;
 	device_t		dev;
 };
 
@@ -184,6 +185,8 @@ extern void i40e_debug_shared(struct i40e_hw *hw, enum i40e_debug_mask mask,
 
 /* Non-busy-wait that uses kern_yield() */
 void i40e_msec_pause(int);
+
+const char * ixl_vc_opcode_str(uint16_t op);
 
 /*
 ** This hardware supports either 16 or 32 byte rx descriptors;
@@ -235,5 +238,8 @@ ixl_flush_osdep(struct i40e_osdep *osdep)
                      reg, value))
 
 #define ixl_flush(a)		ixl_flush_osdep((a)->back)
+
+enum i40e_status_code i40e_read_nvm_word_srctl(struct i40e_hw *hw, u16 offset,
+					       u16 *data);
 
 #endif /* _I40E_OSDEP_H_ */

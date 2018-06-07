@@ -10,7 +10,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -46,6 +46,7 @@
 #define	DOSPTYP_FAT16	0x06	/* FAT16 partition */
 #define	DOSPTYP_NTFS	0x07	/* NTFS partition */
 #define	DOSPTYP_FAT32	0x0b	/* FAT32 partition */
+#define	DOSPTYP_FAT32LBA	0x0c	/* FAT32 with LBA partition */
 #define	DOSPTYP_EXTLBA	0x0f	/* DOS extended partition */
 #define	DOSPTYP_PPCBOOT	0x41	/* PReP/CHRP boot partition */
 #define	DOSPTYP_LDM	0x42	/* Win2k dynamic extended partition */

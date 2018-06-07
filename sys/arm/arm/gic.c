@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2011 The FreeBSD Foundation
  * All rights reserved.
  *
@@ -34,6 +36,7 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
+#include "opt_acpi.h"
 #include "opt_platform.h"
 
 #include <sys/param.h>
@@ -64,6 +67,11 @@ __FBSDID("$FreeBSD$");
 #ifdef FDT
 #include <dev/fdt/fdt_intr.h>
 #include <dev/ofw/ofw_bus_subr.h>
+#endif
+
+#ifdef DEV_ACPI
+#include <contrib/dev/acpica/include/acpi.h>
+#include <dev/acpica/acpivar.h>
 #endif
 
 #include <arm/arm/gic.h>
@@ -144,6 +152,14 @@ static struct resource_spec arm_gic_spec[] = {
 #endif
 	{ -1, 0 }
 };
+
+
+#if defined(__arm__) && defined(INVARIANTS)
+static int gic_debug_spurious = 1;
+#else
+static int gic_debug_spurious = 0;
+#endif
+TUNABLE_INT("hw.gic.debug_spurious", &gic_debug_spurious);
 
 static u_int arm_gic_map[MAXCPU];
 
@@ -432,7 +448,7 @@ arm_gic_attach(device_t dev)
 	gic_sc = sc;
 
 	/* Initialize mutex */
-	mtx_init(&sc->mutex, "GIC lock", "", MTX_SPIN);
+	mtx_init(&sc->mutex, "GIC lock", NULL, MTX_SPIN);
 
 	/* Distributor Interface */
 	sc->gic_d_bst = rman_get_bustag(sc->gic_res[0]);
@@ -671,11 +687,10 @@ arm_gic_intr(void *arg)
 	 */
 
 	if (irq >= sc->nirqs) {
-#ifdef GIC_DEBUG_SPURIOUS
-		device_printf(sc->gic_dev,
-		    "Spurious interrupt detected: last irq: %d on CPU%d\n",
-		    sc->last_irq[PCPU_GET(cpuid)], PCPU_GET(cpuid));
-#endif
+		if (gic_debug_spurious)
+			device_printf(sc->gic_dev,
+			    "Spurious interrupt detected: last irq: %d on CPU%d\n",
+			    sc->last_irq[PCPU_GET(cpuid)], PCPU_GET(cpuid));
 		return (FILTER_HANDLED);
 	}
 
@@ -700,9 +715,8 @@ dispatch_irq:
 #endif
 	}
 
-#ifdef GIC_DEBUG_SPURIOUS
-	sc->last_irq[PCPU_GET(cpuid)] = irq;
-#endif
+	if (gic_debug_spurious)
+		sc->last_irq[PCPU_GET(cpuid)] = irq;
 	if ((gi->gi_flags & GI_FLAG_EARLY_EOI) == GI_FLAG_EARLY_EOI)
 		gic_c_write_4(sc, GICC_EOIR, irq_active_reg);
 
@@ -880,6 +894,9 @@ gic_map_intr(device_t dev, struct intr_map_data *data, u_int *irqp,
 #ifdef FDT
 	struct intr_map_data_fdt *daf;
 #endif
+#ifdef DEV_ACPI
+	struct intr_map_data_acpi *daa;
+#endif
 
 	sc = device_get_softc(dev);
 	switch (data->type) {
@@ -893,6 +910,14 @@ gic_map_intr(device_t dev, struct intr_map_data *data, u_int *irqp,
 		    (sc->gic_irqs[irq].gi_flags & GI_FLAG_MSI) == 0,
 		    ("%s: Attempting to map a MSI interrupt from FDT",
 		    __func__));
+		break;
+#endif
+#ifdef DEV_ACPI
+	case INTR_MAP_DATA_ACPI:
+		daa = (struct intr_map_data_acpi *)data;
+		irq = daa->irq;
+		pol = daa->pol;
+		trig = daa->trig;
 		break;
 #endif
 	case INTR_MAP_DATA_MSI:
@@ -987,7 +1012,7 @@ arm_gic_setup_intr(device_t dev, struct intr_irqsrc *isrc,
 		gi->gi_trig = trig;
 
 		/* Edge triggered interrupts need an early EOI sent */
-		if (gi->gi_pol == INTR_TRIGGER_EDGE)
+		if (gi->gi_trig == INTR_TRIGGER_EDGE)
 			gi->gi_flags |= GI_FLAG_EARLY_EOI;
 	}
 
@@ -1376,11 +1401,9 @@ int
 arm_gicv2m_attach(device_t dev)
 {
 	struct arm_gicv2m_softc *sc;
-	struct arm_gic_softc *psc;
 	uint32_t typer;
 	int rid;
 
-	psc = device_get_softc(device_get_parent(dev));
 	sc = device_get_softc(dev);
 
 	rid = 0;
@@ -1400,7 +1423,7 @@ arm_gicv2m_attach(device_t dev)
 	arm_gic_reserve_msi_range(device_get_parent(dev), sc->sc_spi_start,
 	    sc->sc_spi_count);
 
-	mtx_init(&sc->sc_mutex, "GICv2m lock", "", MTX_DEF);
+	mtx_init(&sc->sc_mutex, "GICv2m lock", NULL, MTX_DEF);
 
 	intr_msi_register(dev, sc->sc_xref);
 
@@ -1429,7 +1452,7 @@ arm_gicv2m_alloc_msi(device_t dev, device_t child, int count, int maxcount,
 	mtx_lock(&sc->sc_mutex);
 
 	found = false;
-	for (irq = sc->sc_spi_start; irq < sc->sc_spi_end && !found; irq++) {
+	for (irq = sc->sc_spi_start; irq < sc->sc_spi_end; irq++) {
 		/* Start on an aligned interrupt */
 		if ((irq & (maxcount - 1)) != 0)
 			continue;
@@ -1438,23 +1461,25 @@ arm_gicv2m_alloc_msi(device_t dev, device_t child, int count, int maxcount,
 		found = true;
 
 		/* Check this range is valid */
-		for (end_irq = irq; end_irq != irq + count - 1; end_irq++) {
+		for (end_irq = irq; end_irq != irq + count; end_irq++) {
 			/* No free interrupts */
 			if (end_irq == sc->sc_spi_end) {
 				found = false;
 				break;
 			}
 
-			KASSERT((psc->gic_irqs[irq].gi_flags & GI_FLAG_MSI)!= 0,
+			KASSERT((psc->gic_irqs[end_irq].gi_flags & GI_FLAG_MSI)!= 0,
 			    ("%s: Non-MSI interrupt found", __func__));
 
 			/* This is already used */
-			if ((psc->gic_irqs[irq].gi_flags & GI_FLAG_MSI_USED) ==
+			if ((psc->gic_irqs[end_irq].gi_flags & GI_FLAG_MSI_USED) ==
 			    GI_FLAG_MSI_USED) {
 				found = false;
 				break;
 			}
 		}
+		if (found)
+			break;
 	}
 
 	/* Not enough interrupts were found */

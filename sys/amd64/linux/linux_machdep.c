@@ -33,15 +33,14 @@
 __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
-#include <sys/kernel.h>
-#include <sys/systm.h>
 #include <sys/capsicum.h>
-#include <sys/dirent.h>
-#include <sys/file.h>
-#include <sys/fcntl.h>
-#include <sys/filedesc.h>
 #include <sys/clock.h>
+#include <sys/dirent.h>
+#include <sys/fcntl.h>
+#include <sys/file.h>
+#include <sys/filedesc.h>
 #include <sys/imgact.h>
+#include <sys/kernel.h>
 #include <sys/ktr.h>
 #include <sys/limits.h>
 #include <sys/lock.h>
@@ -55,8 +54,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/sched.h>
 #include <sys/syscallsubr.h>
 #include <sys/sysproto.h>
-#include <sys/vnode.h>
+#include <sys/systm.h>
 #include <sys/unistd.h>
+#include <sys/vnode.h>
 #include <sys/wait.h>
 
 #include <security/mac/mac_framework.h>
@@ -72,22 +72,23 @@ __FBSDID("$FreeBSD$");
 #include <machine/segments.h>
 #include <machine/specialreg.h>
 
-#include <vm/vm.h>
 #include <vm/pmap.h>
+#include <vm/vm.h>
 #include <vm/vm_extern.h>
 #include <vm/vm_kern.h>
 #include <vm/vm_map.h>
 
 #include <amd64/linux/linux.h>
 #include <amd64/linux/linux_proto.h>
-#include <compat/linux/linux_ipc.h>
+#include <compat/linux/linux_emul.h>
 #include <compat/linux/linux_file.h>
+#include <compat/linux/linux_ipc.h>
 #include <compat/linux/linux_misc.h>
 #include <compat/linux/linux_mmap.h>
 #include <compat/linux/linux_signal.h>
 #include <compat/linux/linux_util.h>
-#include <compat/linux/linux_emul.h>
 
+#include <x86/include/sysarch.h>
 
 int
 linux_execve(struct thread *td, struct linux_execve_args *args)
@@ -226,28 +227,34 @@ int
 linux_arch_prctl(struct thread *td, struct linux_arch_prctl_args *args)
 {
 	int error;
-	struct pcb *pcb;
+	struct sysarch_args bsd_args;
 
 	LINUX_CTR2(arch_prctl, "0x%x, %p", args->code, args->addr);
 
-	error = ENOTSUP;
-	pcb = td->td_pcb;
-
 	switch (args->code) {
-	case LINUX_ARCH_GET_GS:
-		error = copyout(&pcb->pcb_gsbase, (unsigned long *)args->addr,
-		    sizeof(args->addr));
-		break;
 	case LINUX_ARCH_SET_GS:
-		if (args->addr >= VM_MAXUSER_ADDRESS)
-			return(EPERM);
-		break;
-	case LINUX_ARCH_GET_FS:
-		error = copyout(&pcb->pcb_fsbase, (unsigned long *)args->addr,
-		    sizeof(args->addr));
+		bsd_args.op = AMD64_SET_GSBASE;
+		bsd_args.parms = (void *)args->addr;
+		error = sysarch(td, &bsd_args);
+		if (error == EINVAL)
+			error = EPERM;
 		break;
 	case LINUX_ARCH_SET_FS:
-		error = linux_set_cloned_tls(td, (void *)args->addr);
+		bsd_args.op = AMD64_SET_FSBASE;
+		bsd_args.parms = (void *)args->addr;
+		error = sysarch(td, &bsd_args);
+		if (error == EINVAL)
+			error = EPERM;
+		break;
+	case LINUX_ARCH_GET_FS:
+		bsd_args.op = AMD64_GET_FSBASE;
+		bsd_args.parms = (void *)args->addr;
+		error = sysarch(td, &bsd_args);
+		break;
+	case LINUX_ARCH_GET_GS:
+		bsd_args.op = AMD64_GET_GSBASE;
+		bsd_args.parms = (void *)args->addr;
+		error = sysarch(td, &bsd_args);
 		break;
 	default:
 		error = EINVAL;

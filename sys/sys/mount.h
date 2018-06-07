@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1989, 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -38,6 +40,7 @@
 #ifdef _KERNEL
 #include <sys/lock.h>
 #include <sys/lockmgr.h>
+#include <sys/tslog.h>
 #include <sys/_mutex.h>
 #include <sys/_sx.h>
 #endif
@@ -65,8 +68,8 @@ struct fid {
  * filesystem statistics
  */
 #define	MFSNAMELEN	16		/* length of type name including null */
-#define	MNAMELEN	88		/* size of on/from name bufs */
-#define	STATFS_VERSION	0x20030518	/* current version number */
+#define	MNAMELEN	1024		/* size of on/from name bufs */
+#define	STATFS_VERSION	0x20140518	/* current version number */
 struct statfs {
 	uint32_t f_version;		/* structure version number */
 	uint32_t f_type;		/* type of filesystem */
@@ -91,6 +94,34 @@ struct statfs {
 	char	  f_mntfromname[MNAMELEN];  /* mounted filesystem */
 	char	  f_mntonname[MNAMELEN];    /* directory on which mounted */
 };
+
+#if defined(_WANT_FREEBSD11_STATFS) || defined(_KERNEL)
+#define	FREEBSD11_STATFS_VERSION	0x20030518 /* current version number */
+struct freebsd11_statfs {
+	uint32_t f_version;		/* structure version number */
+	uint32_t f_type;		/* type of filesystem */
+	uint64_t f_flags;		/* copy of mount exported flags */
+	uint64_t f_bsize;		/* filesystem fragment size */
+	uint64_t f_iosize;		/* optimal transfer block size */
+	uint64_t f_blocks;		/* total data blocks in filesystem */
+	uint64_t f_bfree;		/* free blocks in filesystem */
+	int64_t	 f_bavail;		/* free blocks avail to non-superuser */
+	uint64_t f_files;		/* total file nodes in filesystem */
+	int64_t	 f_ffree;		/* free nodes avail to non-superuser */
+	uint64_t f_syncwrites;		/* count of sync writes since mount */
+	uint64_t f_asyncwrites;		/* count of async writes since mount */
+	uint64_t f_syncreads;		/* count of sync reads since mount */
+	uint64_t f_asyncreads;		/* count of async reads since mount */
+	uint64_t f_spare[10];		/* unused spare */
+	uint32_t f_namemax;		/* maximum filename length */
+	uid_t	  f_owner;		/* user that mounted the filesystem */
+	fsid_t	  f_fsid;		/* filesystem id */
+	char	  f_charspare[80];	/* spare string space */
+	char	  f_fstypename[16];	/* filesystem type name */
+	char	  f_mntfromname[88];	/* mounted filesystem */
+	char	  f_mntonname[88];	/* directory on which mounted */
+};
+#endif /* _WANT_FREEBSD11_STATFS || _KERNEL */
 
 #ifdef _KERNEL
 #define	OMFSNAMELEN	16	/* length of fs type name, including null */
@@ -286,6 +317,7 @@ void          __mnt_vnode_markerfree_active(struct vnode **mvp, struct mount *);
 #define	MNT_ROOTFS	0x0000000000004000ULL /* identifies the root fs */
 #define	MNT_USER	0x0000000000008000ULL /* mounted by a user */
 #define	MNT_IGNORE	0x0000000000800000ULL /* do not show entry in df */
+#define	MNT_VERIFIED	0x0000000400000000ULL /* filesystem is verified */
 
 /*
  * Mask of flags that are visible to statfs().
@@ -301,7 +333,7 @@ void          __mnt_vnode_markerfree_active(struct vnode **mvp, struct mount *);
 			MNT_NOCLUSTERW	| MNT_SUIDDIR	| MNT_SOFTDEP	| \
 			MNT_IGNORE	| MNT_EXPUBLIC	| MNT_NOSYMFOLLOW | \
 			MNT_GJOURNAL	| MNT_MULTILABEL | MNT_ACLS	| \
-			MNT_NFS4ACLS	| MNT_AUTOMOUNTED)
+			MNT_NFS4ACLS	| MNT_AUTOMOUNTED | MNT_VERIFIED)
 
 /* Mask of flags that can be updated. */
 #define	MNT_UPDATEMASK (MNT_NOSUID	| MNT_NOEXEC	| \
@@ -484,6 +516,7 @@ struct vfsconf {
 	int	vfc_typenum;		/* historic filesystem type number */
 	int	vfc_refcount;		/* number mounted of this type */
 	int	vfc_flags;		/* permanent flags */
+	int	vfc_prison_flag;	/* prison allow.mount.* flag */
 	struct	vfsoptdecl *vfc_opts;	/* mount options */
 	TAILQ_ENTRY(vfsconf) vfc_list;	/* list of vfscons */
 };
@@ -597,6 +630,7 @@ struct uio;
 
 #ifdef MALLOC_DECLARE
 MALLOC_DECLARE(M_MOUNT);
+MALLOC_DECLARE(M_STATFS);
 #endif
 extern int maxvfsconf;		/* highest defined filesystem type */
 
@@ -676,9 +710,11 @@ vfs_statfs_t	__vfs_statfs;
 #define	VFS_MOUNT(MP) ({						\
 	int _rc;							\
 									\
+	TSRAW(curthread, TS_ENTER, "VFS_MOUNT", (MP)->mnt_vfc->vfc_name);\
 	VFS_PROLOGUE(MP);						\
 	_rc = (*(MP)->mnt_op->vfs_mount)(MP);				\
 	VFS_EPILOGUE(MP);						\
+	TSRAW(curthread, TS_EXIT, "VFS_MOUNT", (MP)->mnt_vfc->vfc_name);\
 	_rc; })
 
 #define	VFS_UNMOUNT(MP, FORCE) ({					\
@@ -816,7 +852,8 @@ vfs_statfs_t	__vfs_statfs;
  */
 #define VFS_VERSION_00	0x19660120
 #define VFS_VERSION_01	0x20121030
-#define VFS_VERSION	VFS_VERSION_01
+#define VFS_VERSION_02	0x20180504
+#define VFS_VERSION	VFS_VERSION_02
 
 #define VFS_SET(vfsops, fsname, flags) \
 	static struct vfsconf fsname ## _vfsconf = {		\

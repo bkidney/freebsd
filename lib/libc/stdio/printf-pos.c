@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1990, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -641,12 +643,13 @@ __grow_type_table(struct typetable *types)
 	enum typeid *const oldtable = types->table;
 	const int oldsize = types->tablesize;
 	enum typeid *newtable;
-	u_int n, newsize = oldsize * 2;
+	u_int n, newsize;
 
 	/* Detect overflow */
 	if (types->nextarg > NL_ARGMAX)
 		return (-1);
 
+	newsize = oldsize * 2;
 	if (newsize < types->nextarg + 1)
 		newsize = types->nextarg + 1;
 	if (oldsize == STATIC_ARG_TBL_SIZE) {
@@ -654,7 +657,7 @@ __grow_type_table(struct typetable *types)
 			return (-1);
 		bcopy(oldtable, newtable, oldsize * sizeof(enum typeid));
 	} else {
-		newtable = realloc(oldtable, newsize * sizeof(enum typeid));
+		newtable = reallocarray(oldtable, newsize, sizeof(enum typeid));
 		if (newtable == NULL)
 			return (-1);
 	}

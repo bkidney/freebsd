@@ -1299,6 +1299,7 @@ ipf_pr_icmp(fin)
 			}
 		}
 #endif
+		/* FALLTHROUGH */
 	case ICMP_SOURCEQUENCH :
 	case ICMP_REDIRECT :
 	case ICMP_TIMXCEED :
@@ -2786,7 +2787,7 @@ ipf_firewall(fin, passp)
 	 * If the rule has "keep frag" and the packet is actually a fragment,
 	 * then create a fragment state entry.
 	 */
-	if ((pass & (FR_KEEPFRAG|FR_KEEPSTATE)) == FR_KEEPFRAG) {
+	if (pass & FR_KEEPFRAG) {
 		if (fin->fin_flx & FI_FRAG) {
 			if (ipf_frag_new(softc, fin, pass) == -1) {
 				LBUMP(ipf_stats[out].fr_bnfr);

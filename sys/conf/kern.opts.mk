@@ -30,24 +30,28 @@ __DEFAULT_YES_OPTIONS = \
     CDDL \
     CRYPT \
     CUSE \
+    EFI \
     FORMAT_EXTENSIONS \
     INET \
     INET6 \
     IPFILTER \
+    IPSEC_SUPPORT \
     ISCSI \
     KERNEL_SYMBOLS \
     NETGRAPH \
     PF \
     SOURCELESS_HOST \
     SOURCELESS_UCODE \
+    TESTS \
     USB_GADGET_EXAMPLES \
     ZFS
 
 __DEFAULT_NO_OPTIONS = \
-    EISA \
     EXTRA_TCP_STACKS \
+    KERNEL_RETPOLINE \
     NAND \
     OFED \
+    RATELIMIT \
     REPRODUCIBLE_BUILD
 
 # Some options are totally broken on some architectures. We disable
@@ -60,7 +64,7 @@ __DEFAULT_NO_OPTIONS = \
 
 # Things that don't work based on the CPU
 .if ${MACHINE_CPUARCH} == "arm"
-. if ${MACHINE_ARCH:Marmv6*} == ""
+. if ${MACHINE_ARCH:Marmv[67]*} == ""
 BROKEN_OPTIONS+= CDDL ZFS
 . endif
 .endif
@@ -73,14 +77,24 @@ BROKEN_OPTIONS+= CDDL ZFS SSP
 BROKEN_OPTIONS+= ZFS
 .endif
 
-# Things that don't work because the kernel doesn't have the support
-# for them.
-.if ${MACHINE} != "i386"
-BROKEN_OPTIONS+= EISA
+.if ${MACHINE_CPUARCH} == "riscv"
+BROKEN_OPTIONS+= FORMAT_EXTENSIONS
 .endif
 
+# Things that don't work because the kernel doesn't have the support
+# for them.
 .if ${MACHINE} != "i386" && ${MACHINE} != "amd64"
 BROKEN_OPTIONS+= OFED
+.endif
+
+# Things that don't work based on toolchain support.
+.if ${MACHINE} != "i386" && ${MACHINE} != "amd64"
+BROKEN_OPTIONS+= KERNEL_RETPOLINE
+.endif
+
+# EFI doesn't exist on mips, powerpc, sparc or riscv.
+.if ${MACHINE:Mmips} || ${MACHINE:Mpowerpc} || ${MACHINE:Msparc64} || ${MACHINE:Mriscv}
+BROKEN_OPTIONS+=EFI
 .endif
 
 # expanded inline from bsd.mkopt.mk to avoid share/mk dependency

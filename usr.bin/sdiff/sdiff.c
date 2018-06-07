@@ -29,7 +29,7 @@ __FBSDID("$FreeBSD$");
 
 #include "extern.h"
 
-#define DIFF_PATH	"/usr/bin/diff"
+static char diff_path[] = "/usr/bin/diff";
 
 #define WIDTH 126
 /*
@@ -82,34 +82,13 @@ enum {
 	NORMAL_OPT,
 	FCASE_SENSITIVE_OPT,
 	FCASE_IGNORE_OPT,
-	FROMFILE_OPT,
-	TOFILE_OPT,
-	UNIDIR_OPT,
 	STRIPCR_OPT,
-	HORIZ_OPT,
-	LEFTC_OPT,
-	SUPCL_OPT,
-	LF_OPT,
-	/* the following groupings must be in sequence */
-	OLDGF_OPT,
-	NEWGF_OPT,
-	UNCGF_OPT,
-	CHGF_OPT,
-	OLDLF_OPT,
-	NEWLF_OPT,
-	UNCLF_OPT,
-	/* end order-sensitive enums */
 	TSIZE_OPT,
-	HLINES_OPT,
-	LFILES_OPT,
 	DIFFPROG_OPT,
-
-	NOOP_OPT,
 };
 
 static struct option longopts[] = {
 	/* options only processed in sdiff */
-	{ "left-column",		no_argument,		NULL,	LEFTC_OPT },
 	{ "suppress-common-lines",	no_argument,		NULL,	's' },
 	{ "width",			required_argument,	NULL,	'w' },
 
@@ -129,6 +108,7 @@ static struct option longopts[] = {
 	{ "ignore-tab-expansion",	no_argument,		NULL,	'E' },
 	{ "ignore-matching-lines",	required_argument,	NULL,	'I' },
 	{ "ignore-case",		no_argument,		NULL,	'i' },
+	{ "left-column",		no_argument,		NULL,	'l' },
 	{ "expand-tabs",		no_argument,		NULL,	't' },
 	{ "speed-large-files",		no_argument,		NULL,	'H' },
 	{ "ignore-all-space",		no_argument,		NULL,	'W' },
@@ -233,10 +213,11 @@ main(int argc, char **argv)
 	int ch, fd[2] = {-1}, status;
 	pid_t pid=0;
 	const char *outfile = NULL;
-	struct option *popt;
-	char **diffargv, *diffprog = DIFF_PATH, *filename1, *filename2,
+	char **diffargv, *diffprog = diff_path, *filename1, *filename2,
 	     *tmp1, *tmp2, *s1, *s2;
 	int i;
+	char I_arg[] = "-I";
+	char speed_lf[] = "--speed-large-files";
 
 	/*
 	 * Process diff flags.
@@ -279,9 +260,7 @@ main(int argc, char **argv)
 		case 'E':
 		case 'i':
 		case 't':
-		case 'H':
 		case 'W':
-			for(popt = longopts; ch != popt->val && popt->name != NULL; popt++);
 			diffargv[1]  = realloc(diffargv[1], sizeof(char) * strlen(diffargv[1]) + 2);
 			/*
 			 * In diff, the 'W' option is 'w' and the 'w' is 'W'.
@@ -291,12 +270,15 @@ main(int argc, char **argv)
 			else
 				sprintf(diffargv[1], "%s%c", diffargv[1], ch);
 			break;
+		case 'H':
+			diffargv[diffargc++] = speed_lf;
+			break;
 		case DIFFPROG_OPT:
 			diffargv[0] = diffprog = optarg;
 			break;
 		case 'I':
 			Iflag = 1;
-			diffargv[diffargc++] = "-I";
+			diffargv[diffargc++] = I_arg;
 			diffargv[diffargc++] = optarg;
 			break;
 		case 'l':
@@ -636,7 +618,7 @@ QUIT:
  * Takes into account that tabs can take multiple columns.
  */
 static void
-println(const char *s1, const char div, const char *s2)
+println(const char *s1, const char divider, const char *s2)
 {
 	size_t col;
 
@@ -653,7 +635,7 @@ println(const char *s1, const char div, const char *s2)
 		putchar(' ');
 
 	/* Only print left column. */
-	if (div == ' ' && !s2) {
+	if (divider == ' ' && !s2) {
 		printf(" (\n");
 		return;
 	}
@@ -663,10 +645,10 @@ println(const char *s1, const char div, const char *s2)
 	 * need to add the space for padding.
 	 */
 	if (!s2) {
-		printf(" %c\n", div);
+		printf(" %c\n", divider);
 		return;
 	}
-	printf(" %c ", div);
+	printf(" %c ", divider);
 	col += 3;
 
 	/* Skip angle bracket and space. */
@@ -888,14 +870,14 @@ parsecmd(FILE *diffpipe, FILE *file1, FILE *file2)
  * Queues up a diff line.
  */
 static void
-enqueue(char *left, char div, char *right)
+enqueue(char *left, char divider, char *right)
 {
 	struct diffline *diffp;
 
 	if (!(diffp = malloc(sizeof(struct diffline))))
 		err(2, "enqueue");
 	diffp->left = left;
-	diffp->div = div;
+	diffp->div = divider;
 	diffp->right = right;
 	STAILQ_INSERT_TAIL(&diffhead, diffp, diffentries);
 }
@@ -1171,7 +1153,7 @@ usage(void)
 {
 
 	fprintf(stderr,
-	    "usage: sdiff [-abdilstW] [-I regexp] [-o outfile] [-w width] file1"
+	    "usage: sdiff [-abdilstHW] [-I regexp] [-o outfile] [-w width] file1"
 	    " file2\n");
 	exit(2);
 }

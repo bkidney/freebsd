@@ -36,26 +36,27 @@
 	atomic_cmpset_ptr((volatile uintptr_t *)(_a), (uintptr_t)(_b), (uintptr_t) (_c))
 #define cas32	atomic_cmpset_32
 
-#if !defined(__LP64__) && !defined(__mips_n32) && !defined(ARM_HAVE_ATOMIC64)
+#if defined(__i386__) && (defined(_KERNEL) || defined(KLD_MODULE))
+#define	I386_HAVE_ATOMIC64
+#endif
+
+#if !defined(__LP64__) && !defined(__mips_n32) && \
+    !defined(ARM_HAVE_ATOMIC64) && !defined(I386_HAVE_ATOMIC64)
 extern void atomic_add_64(volatile uint64_t *target, int64_t delta);
 extern void atomic_dec_64(volatile uint64_t *target);
 #endif
 #ifndef __sparc64__
-#ifndef atomic_cas_32
 extern uint32_t atomic_cas_32(volatile uint32_t *target, uint32_t cmp,
     uint32_t newval);
-#endif
-#ifndef atomic_cas_64
 extern uint64_t atomic_cas_64(volatile uint64_t *target, uint64_t cmp,
     uint64_t newval);
-#endif
 #endif
 extern uint64_t atomic_add_64_nv(volatile uint64_t *target, int64_t delta);
 extern uint8_t atomic_or_8_nv(volatile uint8_t *target, uint8_t value);
 extern void membar_producer(void);
 
 #if defined(__sparc64__) || defined(__powerpc__) || defined(__arm__) || \
-    defined(__mips__) || defined(__aarch64__) || defined(__riscv__)
+    defined(__mips__) || defined(__aarch64__) || defined(__riscv)
 extern void atomic_or_8(volatile uint8_t *target, uint8_t value);
 #else
 static __inline void
@@ -89,7 +90,8 @@ atomic_dec_32_nv(volatile uint32_t *target)
 	return (atomic_fetchadd_32(target, -1) - 1);
 }
 
-#if defined(__LP64__) || defined(__mips_n32) || defined(ARM_HAVE_ATOMIC64)
+#if defined(__LP64__) || defined(__mips_n32) || \
+    defined(ARM_HAVE_ATOMIC64) || defined(I386_HAVE_ATOMIC64)
 static __inline void
 atomic_dec_64(volatile uint64_t *target)
 {
@@ -127,7 +129,6 @@ atomic_dec_64_nv(volatile uint64_t *target)
 	return (atomic_add_64_nv(target, -1));
 }
 
-#ifndef atomic_cas_ptr
 #if !defined(COMPAT_32BIT) && defined(__LP64__)
 static __inline void *
 atomic_cas_ptr(volatile void *target, void *cmp,  void *newval)
@@ -143,6 +144,5 @@ atomic_cas_ptr(volatile void *target, void *cmp,  void *newval)
 	    (uint32_t)cmp, (uint32_t)newval));
 }
 #endif	/* !defined(COMPAT_32BIT) && defined(__LP64__) */
-#endif
 
 #endif	/* !_OPENSOLARIS_SYS_ATOMIC_H_ */

@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2016 Ruslan Bukin <br@bsdpad.com>
+ * Copyright (c) 2016-2018 Ruslan Bukin <br@bsdpad.com>
  * All rights reserved.
  *
  * This software was developed by SRI International and the University of
@@ -79,8 +79,12 @@ struct aic_softc {
 	clk_t			clk_i2s;
 	struct aic_rate		*sr;
 	void			*ih;
+	int			internal_codec;
+
+	/* xDMA */
 	struct xdma_channel	*xchan;
 	xdma_controller_t	*xdma_tx;
+	struct xdma_request	req;
 };
 
 /* Channel registers */
@@ -120,7 +124,7 @@ struct aic_rate {
 };
 
 static struct aic_rate rate_map[] = {
-	{ 96000 },
+	{ 48000 },
 	/* TODO: add more frequences */
 	{ 0 },
 };
@@ -287,25 +291,25 @@ aicchan_setblocksize(kobj_t obj, void *data, uint32_t blocksize)
 }
 
 static int
-aic_intr(void *arg)
+aic_intr(void *arg, xdma_transfer_status_t *status)
 {
 	struct sc_pcminfo *scp;
+	struct xdma_request *req;
 	xdma_channel_t *xchan;
 	struct sc_chinfo *ch;
 	struct aic_softc *sc;
-	xdma_config_t *conf;
 	int bufsize;
 
 	scp = arg;
 	sc = scp->sc;
 	ch = &scp->chan[0];
+	req = &sc->req;
 
 	xchan = sc->xchan;
-	conf = &xchan->conf;
 
 	bufsize = sndbuf_getsize(ch->buffer);
 
-	sc->pos += conf->block_len;
+	sc->pos += req->block_len;
 	if (sc->pos >= bufsize)
 		sc->pos -= bufsize;
 
@@ -330,20 +334,23 @@ setup_xdma(struct sc_pcminfo *scp)
 
 	KASSERT(fmt & AFMT_16BIT, ("16-bit audio supported only."));
 
-	err = xdma_prep_cyclic(sc->xchan,
-	    XDMA_MEM_TO_DEV,			/* direction */
-	    sc->buf_base_phys,			/* src addr */
-	    sc->aic_fifo_paddr,			/* dst addr */
-	    sndbuf_getblksz(ch->buffer),	/* block len */
-	    sndbuf_getblkcnt(ch->buffer),	/* block num */
-	    2,					/* src port width */
-	    2);					/* dst port width */
+	sc->req.operation = XDMA_CYCLIC;
+	sc->req.req_type = XR_TYPE_PHYS;
+	sc->req.direction = XDMA_MEM_TO_DEV;
+	sc->req.src_addr = sc->buf_base_phys;
+	sc->req.dst_addr = sc->aic_fifo_paddr;
+	sc->req.src_width = 2;
+	sc->req.dst_width = 2;
+	sc->req.block_len = sndbuf_getblksz(ch->buffer);
+	sc->req.block_num = sndbuf_getblkcnt(ch->buffer);
+
+	err = xdma_request(sc->xchan, &sc->req);
 	if (err != 0) {
 		device_printf(sc->dev, "Can't configure virtual channel\n");
 		return (-1);
 	}
 
-	xdma_begin(sc->xchan);
+	xdma_control(sc->xchan, XDMA_CMD_BEGIN);
 
 	return (0);
 }
@@ -355,7 +362,6 @@ aic_start(struct sc_pcminfo *scp)
 	int reg;
 
 	sc = scp->sc;
-	sc->pos = 0;
 
 	/* Ensure clock enabled. */
 	reg = READ4(sc, I2SCR);
@@ -385,11 +391,7 @@ aic_stop(struct sc_pcminfo *scp)
 	reg &= ~(AICCR_TDMS | AICCR_ERPL);
 	WRITE4(sc, AICCR, reg);
 
-	xdma_terminate(sc->xchan);
-
-	sc->pos = 0;
-
-	bzero(sc->buf_base, sc->dma_size);
+	xdma_control(sc->xchan, XDMA_CMD_TERMINATE);
 
 	return (0);
 }
@@ -411,6 +413,8 @@ aicchan_trigger(kobj_t obj, void *data, int go)
 	case PCMTRIG_START:
 		ch->run = 1;
 
+		sc->pos = 0;
+
 		aic_start(scp);
 
 		break;
@@ -420,6 +424,10 @@ aicchan_trigger(kobj_t obj, void *data, int go)
 		ch->run = 0;
 
 		aic_stop(scp);
+
+		sc->pos = 0;
+
+		bzero(sc->buf_base, sc->dma_size);
 
 		break;
 	}
@@ -448,7 +456,7 @@ static uint32_t aic_pfmt[] = {
 	0
 };
 
-static struct pcmchan_caps aic_pcaps = {96000, 96000, aic_pfmt, 0};
+static struct pcmchan_caps aic_pcaps = {48000, 48000, aic_pfmt, 0};
 
 static struct pcmchan_caps *
 aicchan_getcaps(kobj_t obj, void *data)
@@ -583,16 +591,13 @@ aic_configure_clocks(struct aic_softc *sc)
 static int
 aic_configure(struct aic_softc *sc)
 {
-	int internal_codec;
 	int reg;
-
-	internal_codec = 1;
 
 	WRITE4(sc, AICFR, AICFR_RST);
 
 	/* Configure AIC */
 	reg = 0;
-	if (internal_codec) {
+	if (sc->internal_codec) {
 		reg |= (AICFR_ICDC);
 	} else {
 		reg |= (AICFR_SYNCD | AICFR_BCKD);
@@ -605,6 +610,48 @@ aic_configure(struct aic_softc *sc)
 	reg = READ4(sc, AICFR);
 	reg |= (AICFR_ENB);	/* Enable the controller. */
 	WRITE4(sc, AICFR, reg);
+
+	return (0);
+}
+
+static int
+sysctl_hw_pcm_internal_codec(SYSCTL_HANDLER_ARGS)
+{
+	struct sc_pcminfo *scp;
+	struct sc_chinfo *ch;
+	struct aic_softc *sc;
+	int error, val;
+
+	if (arg1 == NULL)
+		return (EINVAL);
+
+	scp = arg1;
+	sc = scp->sc;
+	ch = &scp->chan[0];
+
+	snd_mtxlock(sc->lock);
+
+	val = sc->internal_codec;
+	error = sysctl_handle_int(oidp, &val, 0, req);
+	if (error || req->newptr == NULL) {
+		snd_mtxunlock(sc->lock);
+		return (error);
+	}
+	if (val < 0 || val > 1) {
+		snd_mtxunlock(sc->lock);
+		return (EINVAL);
+	}
+
+	if (sc->internal_codec != val) {
+		sc->internal_codec = val;
+		if (ch->run)
+			aic_stop(scp);
+		aic_configure(sc);
+		if (ch->run)
+			aic_start(scp);
+	}
+
+	snd_mtxunlock(sc->lock);
 
 	return (0);
 }
@@ -635,6 +682,7 @@ aic_attach(device_t dev)
 	sc = malloc(sizeof(*sc), M_DEVBUF, M_WAITOK | M_ZERO);
 	sc->dev = dev;
 	sc->pos = 0;
+	sc->internal_codec = 1;
 
 	/* Get xDMA controller */
 	sc->xdma_tx = xdma_ofw_get(sc->dev, "tx");
@@ -644,7 +692,7 @@ aic_attach(device_t dev)
 	}
 
 	/* Alloc xDMA virtual channel. */
-	sc->xchan = xdma_channel_alloc(sc->xdma_tx);
+	sc->xchan = xdma_channel_alloc(sc->xdma_tx, 0);
 	if (sc->xchan == NULL) {
 		device_printf(dev, "Can't alloc virtual DMA channel.\n");
 		return (ENXIO);
@@ -717,6 +765,13 @@ aic_attach(device_t dev)
 	pcm_setstatus(dev, status);
 
 	mixer_init(dev, &aicmixer_class, scp);
+
+	/* Create device sysctl node. */
+	SYSCTL_ADD_PROC(device_get_sysctl_ctx(dev),
+	    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)),
+	    OID_AUTO, "internal_codec", CTLTYPE_INT | CTLFLAG_RW,
+	    scp, 0, sysctl_hw_pcm_internal_codec, "I",
+	    "use internal audio codec");
 
 	return (0);
 }

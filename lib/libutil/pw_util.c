@@ -1,4 +1,6 @@
-/*-
+/*--
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1990, 1993, 1994
  *	The Regents of the University of California.  All rights reserved.
  * Copyright (c) 2002 Networks Associates Technology, Inc.
@@ -17,7 +19,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -34,13 +36,9 @@
  * SUCH DAMAGE.
  */
 
-#ifndef lint
-#if 0
-static const char sccsid[] = "@(#)pw_util.c	8.3 (Berkeley) 4/2/94";
-#endif
-static const char rcsid[] =
-  "$FreeBSD$";
-#endif /* not lint */
+#include <sys/cdefs.h>
+__FBSDID("$FreeBSD$");
+__SCCSID("@(#)pw_util.c	8.3 (Berkeley) 4/2/94");
 
 /*
  * This file is used by all the "password" programs; vipw(8), chpass(1),
@@ -468,7 +466,7 @@ pw_copy(int ffd, int tfd, const struct passwd *pw, struct passwd *old_pw)
 			if (eof)
 				break;
 			while ((size_t)(q - p) >= size) {
-				if ((tmp = realloc(buf, size * 2)) == NULL) {
+				if ((tmp = reallocarray(buf, 2, size)) == NULL) {
 					warnx("passwd line too long");
 					goto err;
 				}

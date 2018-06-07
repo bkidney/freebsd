@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2006-2008 Stanislav Sedov <stas@FreeBSD.org>
  * All rights reserved.
  *
@@ -71,6 +73,7 @@ static int cpuctl_do_cpuid(int cpu, cpuctl_cpuid_args_t *data,
     struct thread *td);
 static int cpuctl_do_cpuid_count(int cpu, cpuctl_cpuid_count_args_t *data,
     struct thread *td);
+static int cpuctl_do_eval_cpu_features(int cpu, struct thread *td);
 static int cpuctl_do_update(int cpu, cpuctl_update_args_t *data,
     struct thread *td);
 static int update_intel(int cpu, cpuctl_update_args_t *args,
@@ -126,7 +129,8 @@ set_cpu(int cpu, struct thread *td)
 	sched_bind(td, cpu);
 	thread_unlock(td);
 	KASSERT(td->td_oncpu == cpu,
-	    ("[cpuctl,%d]: cannot bind to target cpu %d on cpu %d", __LINE__, cpu, td->td_oncpu));
+	    ("[cpuctl,%d]: cannot bind to target cpu %d on cpu %d", __LINE__,
+	    cpu, td->td_oncpu));
 }
 
 static void
@@ -145,18 +149,20 @@ restore_cpu(int oldcpu, int is_bound, struct thread *td)
 
 int
 cpuctl_ioctl(struct cdev *dev, u_long cmd, caddr_t data,
-	int flags, struct thread *td)
+    int flags, struct thread *td)
 {
-	int ret;
-	int cpu = dev2unit(dev);
+	int cpu, ret;
 
+	cpu = dev2unit(dev);
 	if (cpu > mp_maxid || !cpu_enabled(cpu)) {
 		DPRINTF("[cpuctl,%d]: bad cpu number %d\n", __LINE__, cpu);
 		return (ENXIO);
 	}
 	/* Require write flag for "write" requests. */
-	if ((cmd == CPUCTL_WRMSR || cmd == CPUCTL_UPDATE) &&
-	    ((flags & FWRITE) == 0))
+	if ((cmd == CPUCTL_MSRCBIT || cmd == CPUCTL_MSRSBIT ||
+	    cmd == CPUCTL_UPDATE || cmd == CPUCTL_WRMSR ||
+	    cmd == CPUCTL_EVAL_CPU_FEATURES) &&
+	    (flags & FWRITE) == 0)
 		return (EPERM);
 	switch (cmd) {
 	case CPUCTL_RDMSR:
@@ -182,6 +188,9 @@ cpuctl_ioctl(struct cdev *dev, u_long cmd, caddr_t data,
 	case CPUCTL_CPUID_COUNT:
 		ret = cpuctl_do_cpuid_count(cpu,
 		    (cpuctl_cpuid_count_args_t *)data, td);
+		break;
+	case CPUCTL_EVAL_CPU_FEATURES:
+		ret = cpuctl_do_eval_cpu_features(cpu, td);
 		break;
 	default:
 		ret = EINVAL;
@@ -279,7 +288,8 @@ cpuctl_do_msr(int cpu, cpuctl_msr_args_t *data, u_long cmd, struct thread *td)
 			ret = wrmsr_safe(data->msr, reg & ~data->data);
 		critical_exit();
 	} else
-		panic("[cpuctl,%d]: unknown operation requested: %lu", __LINE__, cmd);
+		panic("[cpuctl,%d]: unknown operation requested: %lu",
+		    __LINE__, cmd);
 	restore_cpu(oldcpu, is_bound, td);
 	return (ret);
 }
@@ -311,7 +321,8 @@ cpuctl_do_update(int cpu, cpuctl_update_args_t *data, struct thread *td)
 		ret = update_intel(cpu, data, td);
 	else if(strncmp(vendor, AMD_VENDOR_ID, sizeof(AMD_VENDOR_ID)) == 0)
 		ret = update_amd(cpu, data, td);
-	else if(strncmp(vendor, CENTAUR_VENDOR_ID, sizeof(CENTAUR_VENDOR_ID)) == 0)
+	else if(strncmp(vendor, CENTAUR_VENDOR_ID, sizeof(CENTAUR_VENDOR_ID))
+	    == 0)
 		ret = update_via(cpu, data, td);
 	else
 		ret = ENXIO;
@@ -356,8 +367,10 @@ update_intel(int cpu, cpuctl_update_args_t *args, struct thread *td)
 	rdmsr_safe(MSR_BIOS_SIGN, &rev0); /* Get current microcode revision. */
 
 	/*
-	 * Perform update.
+	 * Perform update.  Flush caches first to work around seemingly
+	 * undocumented errata applying to some Broadwell CPUs.
 	 */
+	wbinvd();
 	wrmsr_safe(MSR_BIOS_UPDT_TRIG, (uintptr_t)(ptr));
 	wrmsr_safe(MSR_BIOS_SIGN, 0);
 
@@ -497,6 +510,32 @@ fail:
 	free(ptr, M_CPUCTL);
 	return (ret);
 }
+
+static int
+cpuctl_do_eval_cpu_features(int cpu, struct thread *td)
+{
+	int is_bound = 0;
+	int oldcpu;
+
+	KASSERT(cpu >= 0 && cpu <= mp_maxid,
+	    ("[cpuctl,%d]: bad cpu number %d", __LINE__, cpu));
+
+#ifdef __i386__
+	if (cpu_id == 0)
+		return (ENODEV);
+#endif
+	oldcpu = td->td_oncpu;
+	is_bound = cpu_sched_is_bound(td);
+	set_cpu(cpu, td);
+	identify_cpu1();
+	identify_cpu2();
+	hw_ibrs_recalculate();
+	restore_cpu(oldcpu, is_bound, td);
+	hw_ssb_recalculate(true);
+	printcpuinfo();
+	return (0);
+}
+
 
 int
 cpuctl_open(struct cdev *dev, int flags, int fmt __unused, struct thread *td)

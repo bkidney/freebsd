@@ -25,7 +25,11 @@
 #define	_SCSI_SCSI_ALL_H 1
 
 #include <sys/cdefs.h>
+#ifdef _KERNEL
 #include <machine/stdarg.h>
+#else
+#include <stdarg.h>
+#endif
 
 #ifdef _KERNEL
 /*
@@ -228,6 +232,7 @@ struct scsi_mode_select_6
 	u_int8_t opcode;
 	u_int8_t byte2;
 #define	SMS_SP	0x01
+#define	SMS_RTD	0x02
 #define	SMS_PF	0x10
 	u_int8_t unused[2];
 	u_int8_t length;
@@ -564,6 +569,7 @@ struct scsi_log_sense
 #define	SLS_ERROR_LASTN_PAGE		0x07
 #define	SLS_LOGICAL_BLOCK_PROVISIONING	0x0c
 #define	SLS_SELF_TEST_PAGE		0x10
+#define	SLS_SOLID_STATE_MEDIA		0x11
 #define	SLS_STAT_AND_PERF		0x19
 #define	SLS_IE_PAGE			0x2f
 #define	SLS_PAGE_CTRL_MASK		0xC0
@@ -621,6 +627,13 @@ struct scsi_log_param_header {
 #define	SLP_DS				0x40
 #define	SLP_DU				0x80
 	u_int8_t param_len;
+};
+
+struct scsi_log_media_pct_used {
+	struct scsi_log_param_header hdr;
+#define	SLP_SS_MEDIA_PCT_USED		0x0001
+	uint8_t reserved[3];
+	uint8_t pct_used;
 };
 
 struct scsi_log_stat_and_perf {
@@ -3038,7 +3051,7 @@ struct scsi_set_timestamp_parameters
 {
 	uint8_t reserved1[4];
 	uint8_t timestamp[6];
-	uint8_t reserved2[4];
+	uint8_t reserved2[2];
 };
 
 struct scsi_report_timestamp_parameter_data
@@ -3196,11 +3209,12 @@ struct scsi_sense_data_fixed
 #define		SSD_KEY_BLANK_CHECK	0x08
 #define		SSD_KEY_Vendor_Specific	0x09
 #define		SSD_KEY_COPY_ABORTED	0x0a
-#define		SSD_KEY_ABORTED_COMMAND	0x0b		
+#define		SSD_KEY_ABORTED_COMMAND	0x0b
 #define		SSD_KEY_EQUAL		0x0c
 #define		SSD_KEY_VOLUME_OVERFLOW	0x0d
 #define		SSD_KEY_MISCOMPARE	0x0e
-#define		SSD_KEY_COMPLETED	0x0f			
+#define		SSD_KEY_COMPLETED	0x0f
+#define	SSD_SDAT_OVFL	0x10
 #define	SSD_ILI		0x20
 #define	SSD_EOM		0x40
 #define	SSD_FILEMARK	0x80
@@ -3238,7 +3252,9 @@ struct scsi_sense_data_desc
 	uint8_t sense_key;
 	uint8_t	add_sense_code;
 	uint8_t	add_sense_code_qual;
-	uint8_t	reserved[3];
+	uint8_t	flags;
+#define	SSDD_SDAT_OVFL		0x80
+	uint8_t	reserved[2];
 	/*
 	 * Note that SPC-4, section 4.5.2.1 says that the extra_len field
 	 * must be less than or equal to 244.
@@ -3532,6 +3548,8 @@ struct scsi_sense_forwarded
 #define	SSD_FORWARDED_SDS_UNK	0x00
 #define	SSD_FORWARDED_SDS_EXSRC	0x01
 #define	SSD_FORWARDED_SDS_EXDST	0x02
+	uint8_t	status;
+	uint8_t	sense_data[];
 };
 
 /*
@@ -3704,13 +3722,15 @@ void scsi_desc_iterate(struct scsi_sense_data_desc *sense, u_int sense_len,
 					void *), void *arg);
 uint8_t *scsi_find_desc(struct scsi_sense_data_desc *sense, u_int sense_len,
 			uint8_t desc_type);
-void scsi_set_sense_data(struct scsi_sense_data *sense_data, 
+void scsi_set_sense_data(struct scsi_sense_data *sense_data,
 			 scsi_sense_data_type sense_format, int current_error,
 			 int sense_key, int asc, int ascq, ...) ;
+void scsi_set_sense_data_len(struct scsi_sense_data *sense_data,
+    u_int *sense_len, scsi_sense_data_type sense_format, int current_error,
+    int sense_key, int asc, int ascq, ...) ;
 void scsi_set_sense_data_va(struct scsi_sense_data *sense_data,
-			    scsi_sense_data_type sense_format,
-			    int current_error, int sense_key, int asc,
-			    int ascq, va_list ap);
+    u_int *sense_len, scsi_sense_data_type sense_format,
+    int current_error, int sense_key, int asc, int ascq, va_list ap);
 int scsi_get_sense_info(struct scsi_sense_data *sense_data, u_int sense_len,
 			uint8_t info_type, uint64_t *info,
 			int64_t *signed_info);
@@ -3764,6 +3784,10 @@ void scsi_sense_ata_sbuf(struct sbuf *sb, struct scsi_sense_data *sense,
 			 u_int sense_len, uint8_t *cdb, int cdb_len,
 			 struct scsi_inquiry_data *inq_data,
 			 struct scsi_sense_desc_header *header);
+void scsi_sense_forwarded_sbuf(struct sbuf *sb, struct scsi_sense_data *sense,
+			      u_int sense_len, uint8_t *cdb, int cdb_len,
+			      struct scsi_inquiry_data *inq_data,
+			      struct scsi_sense_desc_header *header);
 void scsi_sense_generic_sbuf(struct sbuf *sb, struct scsi_sense_data *sense,
 			     u_int sense_len, uint8_t *cdb, int cdb_len,
 			     struct scsi_inquiry_data *inq_data,
@@ -3808,7 +3832,11 @@ char *		scsi_cdb_string(u_int8_t *cdb_ptr, char *cdb_string,
 void		scsi_cdb_sbuf(u_int8_t *cdb_ptr, struct sbuf *sb);
 
 void		scsi_print_inquiry(struct scsi_inquiry_data *inq_data);
+void		scsi_print_inquiry_sbuf(struct sbuf *sb,
+				        struct scsi_inquiry_data *inq_data);
 void		scsi_print_inquiry_short(struct scsi_inquiry_data *inq_data);
+void		scsi_print_inquiry_short_sbuf(struct sbuf *sb,
+					      struct scsi_inquiry_data *inq_data);
 
 u_int		scsi_calc_syncsrate(u_int period_factor);
 u_int		scsi_calc_syncparam(u_int period);
@@ -3965,21 +3993,24 @@ void		scsi_inquiry(struct ccb_scsiio *csio, u_int32_t retries,
 			     u_int8_t sense_len, u_int32_t timeout);
 
 void		scsi_mode_sense(struct ccb_scsiio *csio, u_int32_t retries,
-				void (*cbfcnp)(struct cam_periph *,
-					       union ccb *),
-				u_int8_t tag_action, int dbd,
-				u_int8_t page_code, u_int8_t page,
-				u_int8_t *param_buf, u_int32_t param_len,
-				u_int8_t sense_len, u_int32_t timeout);
+		    void (*cbfcnp)(struct cam_periph *, union ccb *),
+		    uint8_t tag_action, int dbd, uint8_t pc, uint8_t page,
+		    uint8_t *param_buf, uint32_t param_len,
+		    uint8_t sense_len, uint32_t timeout);
 
 void		scsi_mode_sense_len(struct ccb_scsiio *csio, u_int32_t retries,
-				    void (*cbfcnp)(struct cam_periph *,
-						   union ccb *),
-				    u_int8_t tag_action, int dbd,
-				    u_int8_t page_code, u_int8_t page,
-				    u_int8_t *param_buf, u_int32_t param_len,
-				    int minimum_cmd_size, u_int8_t sense_len,
-				    u_int32_t timeout);
+		    void (*cbfcnp)(struct cam_periph *, union ccb *),
+		    uint8_t tag_action, int dbd, uint8_t pc, uint8_t page,
+		    uint8_t *param_buf, uint32_t param_len,
+		    int minimum_cmd_size, uint8_t sense_len, uint32_t timeout);
+
+void		scsi_mode_sense_subpage(struct ccb_scsiio *csio,
+		    uint32_t retries,
+		    void (*cbfcnp)(struct cam_periph *, union ccb *),
+		    uint8_t tag_action, int dbd, uint8_t pc,
+		    uint8_t page, uint8_t subpage,
+		    uint8_t *param_buf, uint32_t param_len,
+		    int minimum_cmd_size, uint8_t sense_len, uint32_t timeout);
 
 void		scsi_mode_select(struct ccb_scsiio *csio, u_int32_t retries,
 				 void (*cbfcnp)(struct cam_periph *,

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 1998 The NetBSD Foundation, Inc.
  * Copyright (c) 2014 Andrey V. Elsukov <ae@FreeBSD.org>
  * All rights reserved
@@ -69,7 +71,6 @@ struct gre_softc {
 	uint32_t		gre_oseq;
 	uint32_t		gre_key;
 	uint32_t		gre_options;
-	uint32_t		gre_mtu;
 	u_int			gre_fibnum;
 	u_int			gre_hlen;	/* header size */
 	union {
@@ -100,7 +101,7 @@ struct gre_softc {
 #define	gre_oip			gre_gihdr->gi_ip
 #define	gre_oip6		gre_gi6hdr->gi6_ip6
 
-int	gre_input(struct mbuf **, int *, int);
+int	gre_input(struct mbuf *, int, int, void *);
 #ifdef INET
 int	in_gre_attach(struct gre_softc *);
 int	in_gre_output(struct mbuf *, int, int);

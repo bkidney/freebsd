@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1985 Sun Microsystems, Inc.
  * Copyright (c) 1980, 1993
  *	The Regents of the University of California.  All rights reserved.
@@ -40,10 +42,12 @@ static char sccsid[] = "@(#)parse.c	8.1 (Berkeley) 6/6/93";
 #endif
 
 #include <sys/cdefs.h>
+#include <sys/param.h>
 __FBSDID("$FreeBSD$");
 
 #include <err.h>
 #include <stdio.h>
+
 #include "indent_globs.h"
 #include "indent_codes.h"
 #include "indent.h"
@@ -207,7 +211,7 @@ parse(int tk) /* tk: the code for the construct scanned */
 
     }				/* end of switch */
 
-    if (ps.tos >= STACKSIZE - 1)
+    if (ps.tos >= (int)nitems(ps.p_stack) - 1)
 	errx(1, "Parser stack overflow");
 
     reduce();			/* see if any reduction can be done */

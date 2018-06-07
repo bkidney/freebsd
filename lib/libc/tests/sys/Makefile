@@ -4,6 +4,9 @@ PACKAGE=			tests
 
 .include <bsd.own.mk>
 
+.if ${MACHINE_CPUARCH} != "aarch64" && ${MACHINE_CPUARCH} != "riscv"
+ATF_TESTS_C+=			brk_test
+.endif
 ATF_TESTS_C+=			queue_test
 
 # TODO: clone, lwp_create, lwp_ctl, posix_fadvise, recvmmsg,
@@ -12,6 +15,7 @@ NETBSD_ATF_TESTS_C+=		access_test
 NETBSD_ATF_TESTS_C+=		bind_test
 NETBSD_ATF_TESTS_C+=		chroot_test
 NETBSD_ATF_TESTS_C+=		clock_gettime_test
+NETBSD_ATF_TESTS_C+=		clock_nanosleep_test
 NETBSD_ATF_TESTS_C+=		connect_test
 NETBSD_ATF_TESTS_C+=		dup_test
 NETBSD_ATF_TESTS_C+=		fsync_test
@@ -61,7 +65,11 @@ NETBSD_ATF_TESTS_C+=		ucontext_test
 NETBSD_ATF_TESTS_C+=		umask_test
 NETBSD_ATF_TESTS_C+=		unlink_test
 NETBSD_ATF_TESTS_C+=		wait_test
+NETBSD_ATF_TESTS_C+=		wait_noproc_test
+NETBSD_ATF_TESTS_C+=		wait_noproc_wnohang_test
 NETBSD_ATF_TESTS_C+=		write_test
+
+CSTD?=				c99
 
 LIBADD.getpid_test+=		pthread
 LIBADD.timer_create_test+=	rt
@@ -82,7 +90,7 @@ FILESGROUPS+=		truncate_test_FILES
 truncate_test_FILES=	truncate_test.root_owned
 truncate_test_FILESDIR=	${TESTSDIR}
 truncate_test_FILESMODE= 0600
-truncate_test_FILESOWNER= root
+truncate_test_FILESOWN= root
 truncate_test_FILESGRP= wheel
 truncate_test_FILESPACKAGE=	${PACKAGE}
 

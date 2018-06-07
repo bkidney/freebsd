@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011-2012 Stefan Bethke.
  * All rights reserved.
  *
@@ -99,17 +101,24 @@ etherswitch_probe(device_t dev)
 static int
 etherswitch_attach(device_t dev)
 {
-	struct etherswitch_softc *sc = (struct etherswitch_softc *)device_get_softc(dev);
+	int err;
+	struct etherswitch_softc *sc;
+	struct make_dev_args devargs;
 
+	sc = device_get_softc(dev);
 	sc->sc_dev = dev;
-	sc->sc_devnode = make_dev(&etherswitch_cdevsw, device_get_unit(dev),
-			UID_ROOT, GID_WHEEL,
-			0600, "etherswitch%d", device_get_unit(dev));
-	if (sc->sc_devnode == NULL) {
+	make_dev_args_init(&devargs);
+	devargs.mda_devsw = &etherswitch_cdevsw;
+	devargs.mda_uid = UID_ROOT;
+	devargs.mda_gid = GID_WHEEL;
+	devargs.mda_mode = 0600;
+	devargs.mda_si_drv1 = sc;
+	err = make_dev_s(&devargs, &sc->sc_devnode, "etherswitch%d",
+	    device_get_unit(dev));
+	if (err != 0) {
 		device_printf(dev, "failed to create character device\n");
 		return (ENXIO);
 	}
-	sc->sc_devnode->si_drv1 = sc;
 
 	return (0);
 }
@@ -135,6 +144,7 @@ etherswitchioctl(struct cdev *cdev, u_long cmd, caddr_t data, int flags, struct 
 	etherswitch_info_t *info;
 	etherswitch_reg_t *reg;
 	etherswitch_phyreg_t *phyreg;
+	etherswitch_portid_t *portid;
 	int error = 0;
 
 	switch (cmd) {
@@ -191,6 +201,23 @@ etherswitchioctl(struct cdev *cdev, u_long cmd, caddr_t data, int flags, struct 
 
 	case IOETHERSWITCHSETCONF:
 		error = ETHERSWITCH_SETCONF(etherswitch, (etherswitch_conf_t *)data);
+		break;
+
+	case IOETHERSWITCHFLUSHALL:
+		error = ETHERSWITCH_FLUSH_ALL(etherswitch);
+		break;
+
+	case IOETHERSWITCHFLUSHPORT:
+		portid = (etherswitch_portid_t *)data;
+		error = ETHERSWITCH_FLUSH_PORT(etherswitch, portid->es_port);
+		break;
+
+	case IOETHERSWITCHGETTABLE:
+		error = ETHERSWITCH_FETCH_TABLE(etherswitch, (void *) data);
+		break;
+
+	case IOETHERSWITCHGETTABLEENTRY:
+		error = ETHERSWITCH_FETCH_TABLE_ENTRY(etherswitch, (void *) data);
 		break;
 
 	default:

@@ -24,7 +24,7 @@
 .\"
 .\" $FreeBSD$
 .\"
-.Dd August 3, 2016
+.Dd May 9, 2018
 .Dt GELI 8
 .Os
 .Sh NAME
@@ -51,7 +51,7 @@ utility:
 .Pp
 .Nm
 .Cm init
-.Op Fl bgPTv
+.Op Fl bdgPTv
 .Op Fl a Ar aalgo
 .Op Fl B Ar backupfile
 .Op Fl e Ar ealgo
@@ -67,7 +67,8 @@ utility:
 .Cm init
 .Nm
 .Cm attach
-.Op Fl dprv
+.Op Fl Cdprv
+.Op Fl n Ar keyno
 .Op Fl j Ar passfile
 .Op Fl k Ar keyfile
 .Ar prov
@@ -88,7 +89,7 @@ utility:
 .Ar prov
 .Nm
 .Cm configure
-.Op Fl bBgGtT
+.Op Fl bBdDgGtT
 .Ar prov ...
 .Nm
 .Cm setkey
@@ -279,6 +280,11 @@ To inhibit backups, you can use
 .Pa none
 as the
 .Ar backupfile .
+.It Fl d
+When entering the passphrase to boot from this encrypted root filesystem, echo
+.Ql *
+characters.
+This makes the length of the passphrase visible.
 .It Fl e Ar ealgo
 Encryption algorithm to use.
 Currently supported algorithms are:
@@ -388,6 +394,9 @@ suffix.
 .Pp
 Additional options include:
 .Bl -tag -width ".Fl j Ar passfile"
+.It Fl C
+Do a dry-run decryption.
+This is useful to verify passphrase and keyfile without decrypting the device.
 .It Fl d
 If specified, a decrypted provider will be detached automatically on last close.
 This can help with scarce memory so the user does not have to remember to detach the
@@ -399,6 +408,9 @@ Probably a better choice is the
 option for the
 .Cm detach
 subcommand.
+.It Fl n Ar keyno
+Specifies the index number of the Master Key copy to use (could be 0 or 1).
+If the index number is not provided all keys will be tested.
 .It Fl j Ar passfile
 Specifies a file which contains the passphrase component of the User Key
 (or part of it).
@@ -490,6 +502,15 @@ For more information, see the description of the
 subcommand.
 .It Fl B
 Remove the BOOT flag from the given providers.
+.It Fl d
+When entering the passphrase to boot from this encrypted root filesystem, echo
+.Ql *
+characters.
+This makes the length of the passphrase visible.
+.It Fl D
+Disable echoing of any characters when a passphrase is entered to boot from this
+encrypted root filesystem.
+This hides the passphrase length.
 .It Fl g
 Enable booting from this encrypted root filesystem.
 The boot loader prompts for the passphrase and loads

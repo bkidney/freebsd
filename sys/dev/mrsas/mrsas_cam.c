@@ -116,8 +116,7 @@ mrsas_map_mpt_cmd_status(struct mrsas_mpt_cmd *cmd, u_int8_t status,
 extern int mrsas_reset_targets(struct mrsas_softc *sc);
 extern u_int16_t MR_TargetIdToLdGet(u_int32_t ldTgtId, MR_DRV_RAID_MAP_ALL * map);
 extern u_int32_t
-MR_LdBlockSizeGet(u_int32_t ldTgtId, MR_DRV_RAID_MAP_ALL * map,
-    struct mrsas_softc *sc);
+MR_LdBlockSizeGet(u_int32_t ldTgtId, MR_DRV_RAID_MAP_ALL * map);
 extern void mrsas_isr(void *arg);
 extern void mrsas_aen_handler(struct mrsas_softc *sc);
 extern u_int8_t
@@ -356,9 +355,9 @@ mrsas_action(struct cam_sim *sim, union ccb *ccb)
 			ccb->cpi.bus_id = cam_sim_bus(sim);
 			ccb->cpi.initiator_id = MRSAS_SCSI_INITIATOR_ID;
 			ccb->cpi.base_transfer_speed = 150000;
-			strncpy(ccb->cpi.sim_vid, "FreeBSD", SIM_IDLEN);
-			strncpy(ccb->cpi.hba_vid, "AVAGO", HBA_IDLEN);
-			strncpy(ccb->cpi.dev_name, cam_sim_name(sim), DEV_IDLEN);
+			strlcpy(ccb->cpi.sim_vid, "FreeBSD", SIM_IDLEN);
+			strlcpy(ccb->cpi.hba_vid, "AVAGO", HBA_IDLEN);
+			strlcpy(ccb->cpi.dev_name, cam_sim_name(sim), DEV_IDLEN);
 			ccb->cpi.transport = XPORT_SPI;
 			ccb->cpi.transport_version = 2;
 			ccb->cpi.protocol = PROTO_SCSI;
@@ -895,7 +894,7 @@ mrsas_setup_io(struct mrsas_softc *sc, struct mrsas_mpt_cmd *cmd,
 	}
 
 	map_ptr = sc->ld_drv_map[(sc->map_id & 1)];
-	ld_block_size = MR_LdBlockSizeGet(device_id, map_ptr, sc);
+	ld_block_size = MR_LdBlockSizeGet(device_id, map_ptr);
 
 	ld = MR_TargetIdToLdGet(device_id, map_ptr);
 	if ((ld >= MAX_LOGICAL_DRIVES_EXT) || (!sc->fast_path_io)) {

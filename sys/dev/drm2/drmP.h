@@ -66,6 +66,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/sbuf.h>
 #include <sys/taskqueue.h>
 #include <sys/tree.h>
+#include <sys/vmmeter.h>
 #include <vm/vm.h>
 #include <vm/pmap.h>
 #include <vm/vm_extern.h>
@@ -120,7 +121,6 @@ struct drm_device;
 #include <dev/drm2/drm_hashtab.h>
 #include <dev/drm2/drm_mm.h>
 
-#include "opt_compat.h"
 #include "opt_drm.h"
 #include "opt_syscons.h"
 #ifdef DRM_DEBUG
@@ -1575,6 +1575,10 @@ extern int drm_get_pci_dev(device_t kdev, struct drm_device *dev,
 extern int drm_pcie_get_speed_cap_mask(struct drm_device *dev, u32 *speed_mask);
 
 #define	drm_can_sleep()	(DRM_HZ & 1)
+
+/* Platform section */
+int drm_get_platform_dev(device_t kdev, struct drm_device *dev,
+			 struct drm_driver *driver);
 
 /* FreeBSD specific -- should be moved to drm_os_freebsd.h */
 

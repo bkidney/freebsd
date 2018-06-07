@@ -5,7 +5,7 @@
 #NO_UNIVERSE
 
 ident		JZ4780
-machine		mips mipsel
+machine		mips mipselhf
 cpu		CPU_XBURST
 cpu		CPU_MIPS4KC
 
@@ -71,12 +71,9 @@ device		fdt_pinctrl
 
 device		clk
 device		regulator
-device		ext_resources
+options		EXT_RESOURCES
 
 device		gpio
-
-device		iicbus
-device		iic
 
 device 		scbus
 device 		da

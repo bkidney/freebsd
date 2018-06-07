@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Written by: yen_cw@myson.com.tw
  * Copyright (c) 2002 Myson Technology Inc.
  * All rights reserved.
@@ -334,7 +336,7 @@ my_setmulti(struct my_softc * sc)
 
 	/* now program new ones */
 	if_maddr_rlock(ifp);
-	TAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link) {
+	CK_STAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link) {
 		if (ifma->ifma_addr->sa_family != AF_LINK)
 			continue;
 		h = ~ether_crc32_be(LLADDR((struct sockaddr_dl *)
@@ -751,7 +753,7 @@ my_setcfg(struct my_softc * sc, int bmcr)
 static void
 my_reset(struct my_softc * sc)
 {
-	register int    i;
+	int    i;
 
 	MY_LOCK_ASSERT(sc);
 	MY_SETBIT(sc, MY_BCR, MY_SWR);
@@ -1717,7 +1719,7 @@ my_watchdog(void *arg)
 static void
 my_stop(struct my_softc * sc)
 {
-	register int    i;
+	int    i;
 	struct ifnet   *ifp;
 
 	MY_LOCK_ASSERT(sc);

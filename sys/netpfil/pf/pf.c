@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
  * Copyright (c) 2001 Daniel Hartmeier
  * Copyright (c) 2002 - 2008 Henning Brauer
  * Copyright (c) 2012 Gleb Smirnoff <glebius@FreeBSD.org>
@@ -68,6 +70,7 @@ __FBSDID("$FreeBSD$");
 #include <net/radix_mpath.h>
 #include <net/vnet.h>
 
+#include <net/pfil.h>
 #include <net/pfvar.h>
 #include <net/if_pflog.h>
 #include <net/if_pfsync.h>
@@ -129,6 +132,11 @@ VNET_DEFINE(int,			 pf_tcp_secret_init);
 #define	V_pf_tcp_secret_init		 VNET(pf_tcp_secret_init)
 VNET_DEFINE(int,			 pf_tcp_iss_off);
 #define	V_pf_tcp_iss_off		 VNET(pf_tcp_iss_off)
+VNET_DECLARE(int,			 pf_vnet_active);
+#define	V_pf_vnet_active		 VNET(pf_vnet_active)
+
+static VNET_DEFINE(uint32_t, pf_purge_idx);
+#define V_pf_purge_idx	VNET(pf_purge_idx)
 
 /*
  * Queue for pf_intr() sends.
@@ -300,6 +308,7 @@ static void		 pf_route6(struct mbuf **, struct pf_rule *, int,
 int in4_cksum(struct mbuf *m, u_int8_t nxt, int off, int len);
 
 extern int pf_end_threads;
+extern struct proc *pf_purge_proc;
 
 VNET_DEFINE(struct pf_limit, pf_limits[PF_LIMIT_MAX]);
 
@@ -360,11 +369,14 @@ u_long	pf_hashmask;
 u_long	pf_srchashmask;
 static u_long	pf_hashsize;
 static u_long	pf_srchashsize;
+u_long	pf_ioctl_maxcount = 65535;
 
 SYSCTL_ULONG(_net_pf, OID_AUTO, states_hashsize, CTLFLAG_RDTUN,
     &pf_hashsize, 0, "Size of pf(4) states hashtable");
 SYSCTL_ULONG(_net_pf, OID_AUTO, source_nodes_hashsize, CTLFLAG_RDTUN,
     &pf_srchashsize, 0, "Size of pf(4) source nodes hashtable");
+SYSCTL_ULONG(_net_pf, OID_AUTO, request_maxcount, CTLFLAG_RDTUN,
+    &pf_ioctl_maxcount, 0, "Maximum number of tables, addresses, ... in a single ioctl() call");
 
 VNET_DEFINE(void *, pf_swi_cookie);
 
@@ -782,7 +794,7 @@ pf_initialize()
 	if (pf_hashsize == 0 || !powerof2(pf_hashsize))
 		pf_hashsize = PF_HASHSIZ;
 	if (pf_srchashsize == 0 || !powerof2(pf_srchashsize))
-		pf_srchashsize = PF_HASHSIZ / 4;
+		pf_srchashsize = PF_SRCHASHSIZ;
 
 	V_pf_hashseed = arc4random();
 
@@ -796,10 +808,25 @@ pf_initialize()
 	V_pf_state_key_z = uma_zcreate("pf state keys",
 	    sizeof(struct pf_state_key), pf_state_key_ctor, NULL, NULL, NULL,
 	    UMA_ALIGN_PTR, 0);
-	V_pf_keyhash = malloc(pf_hashsize * sizeof(struct pf_keyhash),
-	    M_PFHASH, M_WAITOK | M_ZERO);
-	V_pf_idhash = malloc(pf_hashsize * sizeof(struct pf_idhash),
-	    M_PFHASH, M_WAITOK | M_ZERO);
+
+	V_pf_keyhash = mallocarray(pf_hashsize, sizeof(struct pf_keyhash),
+	    M_PFHASH, M_NOWAIT | M_ZERO);
+	V_pf_idhash = mallocarray(pf_hashsize, sizeof(struct pf_idhash),
+	    M_PFHASH, M_NOWAIT | M_ZERO);
+	if (V_pf_keyhash == NULL || V_pf_idhash == NULL) {
+		printf("pf: Unable to allocate memory for "
+		    "state_hashsize %lu.\n", pf_hashsize);
+
+		free(V_pf_keyhash, M_PFHASH);
+		free(V_pf_idhash, M_PFHASH);
+
+		pf_hashsize = PF_HASHSIZ;
+		V_pf_keyhash = mallocarray(pf_hashsize,
+		    sizeof(struct pf_keyhash), M_PFHASH, M_WAITOK | M_ZERO);
+		V_pf_idhash = mallocarray(pf_hashsize,
+		    sizeof(struct pf_idhash), M_PFHASH, M_WAITOK | M_ZERO);
+	}
+
 	pf_hashmask = pf_hashsize - 1;
 	for (i = 0, kh = V_pf_keyhash, ih = V_pf_idhash; i <= pf_hashmask;
 	    i++, kh++, ih++) {
@@ -814,8 +841,18 @@ pf_initialize()
 	V_pf_limits[PF_LIMIT_SRC_NODES].zone = V_pf_sources_z;
 	uma_zone_set_max(V_pf_sources_z, PFSNODE_HIWAT);
 	uma_zone_set_warning(V_pf_sources_z, "PF source nodes limit reached");
-	V_pf_srchash = malloc(pf_srchashsize * sizeof(struct pf_srchash),
-	  M_PFHASH, M_WAITOK|M_ZERO);
+
+	V_pf_srchash = mallocarray(pf_srchashsize,
+	    sizeof(struct pf_srchash), M_PFHASH, M_NOWAIT | M_ZERO);
+	if (V_pf_srchash == NULL) {
+		printf("pf: Unable to allocate memory for "
+		    "source_hashsize %lu.\n", pf_srchashsize);
+
+		pf_srchashsize = PF_SRCHASHSIZ;
+		V_pf_srchash = mallocarray(pf_srchashsize,
+		    sizeof(struct pf_srchash), M_PFHASH, M_WAITOK | M_ZERO);
+	}
+
 	pf_srchashmask = pf_srchashsize - 1;
 	for (i = 0, sh = V_pf_srchash; i <= pf_srchashmask; i++, sh++)
 		mtx_init(&sh->lock, "pf_srchash", NULL, MTX_DEF);
@@ -1424,44 +1461,53 @@ void
 pf_purge_thread(void *unused __unused)
 {
 	VNET_ITERATOR_DECL(vnet_iter);
-	u_int idx = 0;
 
-	for (;;) {
-		PF_RULES_RLOCK();
-		rw_sleep(pf_purge_thread, &pf_rules_lock, 0, "pftm", hz / 10);
-		PF_RULES_RUNLOCK();
+	sx_xlock(&pf_end_lock);
+	while (pf_end_threads == 0) {
+		sx_sleep(pf_purge_thread, &pf_end_lock, 0, "pftm", hz / 10);
 
 		VNET_LIST_RLOCK();
 		VNET_FOREACH(vnet_iter) {
 			CURVNET_SET(vnet_iter);
 
-		if (pf_end_threads) {
-			pf_end_threads++;
-			wakeup(pf_purge_thread);
-			kproc_exit(0);
-		}
 
-		/* Process 1/interval fraction of the state table every run. */
-		idx = pf_purge_expired_states(idx, pf_hashmask /
+			/* Wait until V_pf_default_rule is initialized. */
+			if (V_pf_vnet_active == 0) {
+				CURVNET_RESTORE();
+				continue;
+			}
+
+			/*
+			 *  Process 1/interval fraction of the state
+			 * table every run.
+			 */
+			V_pf_purge_idx =
+			    pf_purge_expired_states(V_pf_purge_idx, pf_hashmask /
 			    (V_pf_default_rule.timeout[PFTM_INTERVAL] * 10));
 
-		/* Purge other expired types every PFTM_INTERVAL seconds. */
-		if (idx == 0) {
 			/*
-			 * Order is important:
-			 * - states and src nodes reference rules
-			 * - states and rules reference kifs
+			 * Purge other expired types every
+			 * PFTM_INTERVAL seconds.
 			 */
-			pf_purge_expired_fragments();
-			pf_purge_expired_src_nodes();
-			pf_purge_unlinked_rules();
-			pfi_kif_purge();
-		}
-		CURVNET_RESTORE();
+			if (V_pf_purge_idx == 0) {
+				/*
+				 * Order is important:
+				 * - states and src nodes reference rules
+				 * - states and rules reference kifs
+				 */
+				pf_purge_expired_fragments();
+				pf_purge_expired_src_nodes();
+				pf_purge_unlinked_rules();
+				pfi_kif_purge();
+			}
+			CURVNET_RESTORE();
 		}
 		VNET_LIST_RUNLOCK();
 	}
-	/* not reached */
+
+	pf_end_threads++;
+	sx_xunlock(&pf_end_lock);
+	kproc_exit(0);
 }
 
 void
@@ -1481,7 +1527,7 @@ pf_unload_vnet_purge(void)
 	 * Now purge everything.
 	 */
 	pf_purge_expired_states(0, pf_hashmask);
-	pf_purge_expired_fragments();
+	pf_purge_fragments(UINT_MAX);
 	pf_purge_expired_src_nodes();
 
 	/*
@@ -1636,7 +1682,9 @@ pf_unlink_state(struct pf_state *s, u_int flags)
 	PF_HASHROW_UNLOCK(ih);
 
 	pf_detach_state(s);
-	refcount_release(&s->refs);
+	/* pf_state_insert() initialises refs to 2, so we can never release the
+	 * last reference here, only in pf_release_state(). */
+	(void)refcount_release(&s->refs);
 
 	return (pf_release_state(s));
 }
@@ -3547,7 +3595,7 @@ pf_create_state(struct pf_rule *r, struct pf_rule *nr, struct pf_rule *a,
 	    (counter_u64_fetch(r->states_cur) >= r->max_states)) {
 		counter_u64_add(V_pf_status.lcounters[LCNT_STATES], 1);
 		REASON_SET(&reason, PFRES_MAXSTATES);
-		return (PF_DROP);
+		goto csfailed;
 	}
 	/* src node for filter rule */
 	if ((r->rule_flag & PFRULE_SRCTRACK ||
@@ -5462,7 +5510,7 @@ pf_route(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
 		goto bad;
 
 	if (oifp != ifp) {
-		if (pf_test(PF_OUT, ifp, &m0, NULL) != PF_PASS)
+		if (pf_test(PF_OUT, 0, ifp, &m0, NULL) != PF_PASS)
 			goto bad;
 		else if (m0 == NULL)
 			goto done;
@@ -5624,7 +5672,7 @@ pf_route6(struct mbuf **m, struct pf_rule *r, int dir, struct ifnet *oifp,
 		goto bad;
 
 	if (oifp != ifp) {
-		if (pf_test6(PF_FWD, ifp, &m0, NULL) != PF_PASS)
+		if (pf_test6(PF_OUT, PFIL_FWD, ifp, &m0, NULL) != PF_PASS)
 			goto bad;
 		else if (m0 == NULL)
 			goto done;
@@ -5679,8 +5727,7 @@ bad:
 
 /*
  * FreeBSD supports cksum offloads for the following drivers.
- *  em(4), fxp(4), ixgb(4), lge(4), ndis(4), nge(4), re(4),
- *   ti(4), txp(4), xl(4)
+ *  em(4), fxp(4), lge(4), ndis(4), nge(4), re(4), ti(4), txp(4), xl(4)
  *
  * CSUM_DATA_VALID | CSUM_PSEUDO_HDR :
  *  network driver performed cksum including pseudo header, need to verify
@@ -5814,7 +5861,7 @@ pf_check_proto_cksum(struct mbuf *m, int off, int len, u_int8_t p, sa_family_t a
 
 #ifdef INET
 int
-pf_test(int dir, struct ifnet *ifp, struct mbuf **m0, struct inpcb *inp)
+pf_test(int dir, int pflags, struct ifnet *ifp, struct mbuf **m0, struct inpcb *inp)
 {
 	struct pfi_kif		*kif;
 	u_short			 action, reason = 0, log = 0;
@@ -5826,6 +5873,8 @@ pf_test(int dir, struct ifnet *ifp, struct mbuf **m0, struct inpcb *inp)
 	struct pf_ruleset	*ruleset = NULL;
 	struct pf_pdesc		 pd;
 	int			 off, dirndx, pqid = 0;
+
+	PF_RULES_RLOCK_TRACKER;
 
 	M_ASSERTPKTHDR(m);
 
@@ -6201,7 +6250,7 @@ done:
 
 #ifdef INET6
 int
-pf_test6(int dir, struct ifnet *ifp, struct mbuf **m0, struct inpcb *inp)
+pf_test6(int dir, int pflags, struct ifnet *ifp, struct mbuf **m0, struct inpcb *inp)
 {
 	struct pfi_kif		*kif;
 	u_short			 action, reason = 0, log = 0;
@@ -6213,24 +6262,9 @@ pf_test6(int dir, struct ifnet *ifp, struct mbuf **m0, struct inpcb *inp)
 	struct pf_ruleset	*ruleset = NULL;
 	struct pf_pdesc		 pd;
 	int			 off, terminal = 0, dirndx, rh_cnt = 0, pqid = 0;
-	int			 fwdir = dir;
 
+	PF_RULES_RLOCK_TRACKER;
 	M_ASSERTPKTHDR(m);
-
-	/* Detect packet forwarding.
-	 * If the input interface is different from the output interface we're
-	 * forwarding.
-	 * We do need to be careful about bridges. If the
-	 * net.link.bridge.pfil_bridge sysctl is set we can be filtering on a
-	 * bridge, so if the input interface is a bridge member and the output
-	 * interface is its bridge or a member of the same bridge we're not
-	 * actually forwarding but bridging.
-	 */
-	if (dir == PF_OUT && m->m_pkthdr.rcvif && ifp != m->m_pkthdr.rcvif &&
-	    (m->m_pkthdr.rcvif->if_bridge == NULL ||
-	    (m->m_pkthdr.rcvif->if_bridge != ifp->if_softc &&
-	    m->m_pkthdr.rcvif->if_bridge != ifp->if_bridge)))
-		fwdir = PF_FWD;
 
 	if (!V_pf_status.running)
 		return (PF_PASS);
@@ -6609,7 +6643,7 @@ done:
 		PF_STATE_UNLOCK(s);
 
 	/* If reassembled packet passed, create new fragments. */
-	if (action == PF_PASS && *m0 && fwdir == PF_FWD &&
+	if (action == PF_PASS && *m0 && (pflags & PFIL_FWD) &&
 	    (mtag = m_tag_find(m, PF_REASSEMBLED, NULL)) != NULL)
 		action = pf_refragment6(ifp, m0, mtag);
 

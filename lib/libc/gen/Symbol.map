@@ -75,8 +75,6 @@ FBSD_1.0 {
 	ctermid;
 	ctermid_r;
 	daemon;
-	devname;
-	devname_r;
 	getdiskbyname;
 	dladdr;
 	dlclose;
@@ -107,6 +105,7 @@ FBSD_1.0 {
 	sys_errlist;
 	sys_nerr;
 	errno;
+	exect;
 	execl;
 	execle;
 	execlp;
@@ -128,9 +127,6 @@ FBSD_1.0 {
 	setfsent;
 	endfsent;
 	ftok;
-	ftw;
-	glob;
-	globfree;
 	getbootfile;
 	getbsize;
 	cgetset;
@@ -163,7 +159,6 @@ FBSD_1.0 {
 	getloadavg;
 	getlogin;
 	getlogin_r;
-	getmntinfo;
 	setnetgrent;
 	getnetgrent;
 	endnetgrent;
@@ -209,7 +204,6 @@ FBSD_1.0 {
 	lrand48;
 	modf;
 	mrand48;
-	nftw;
 	nice;
 	nlist;
 	nrand48;
@@ -220,13 +214,9 @@ FBSD_1.0 {
 	pclose;
 	psignal;
 	raise;
-	readdir;
-	readdir_r;
 	readpassphrase;
 	getpass;
 	rewinddir;
-	scandir;
-	alphasort;
 	seed48;
 	seekdir;
 	user_from_uid;
@@ -314,14 +304,6 @@ FBSD_1.1 {
 	fdevname_r;
 	fdopendir;
 	feature_present;
-	fts_children;
-	fts_close;
-	fts_get_clientptr;
-	fts_get_stream;
-	fts_open;
-	fts_read;
-	fts_set;
-	fts_set_clientptr;
 	posix_spawn;
 	posix_spawn_file_actions_addclose;
 	posix_spawn_file_actions_adddup2;
@@ -351,7 +333,6 @@ FBSD_1.1 {
 };
 
 FBSD_1.2 {
-	basename_r;
 	cfmakesane;
 	endutxent;
 	getpagesizes;
@@ -408,13 +389,36 @@ FBSD_1.4 {
 	pthread_mutex_consistent;
 	pthread_mutexattr_getrobust;
 	pthread_mutexattr_setrobust;
-	scandir_b;
 	stravis;
 };
 
 FBSD_1.5 {
+	alphasort;
 	basename;
+	daemonfd;
+	devname;
+	devname_r;
 	dirname;
+	elf_aux_info;
+	fts_children;
+	fts_close;
+	fts_get_clientptr;
+	fts_get_stream;
+	fts_open;
+	fts_read;
+	fts_set;
+	fts_set_clientptr;
+	ftw;
+	getentropy;
+	getmntinfo;
+	glob;
+	globfree;
+	nftw;
+	readdir;
+	readdir_r;
+	scandir;
+	scandir_b;
+	sem_clockwait_np;
 };
 
 FBSDprivate_1.0 {
@@ -484,7 +488,6 @@ FBSDprivate_1.0 {
 	_pthread_sigmask;
 	_pthread_testcancel;
 	_spinlock;
-	_spinlock_debug;
 	_spinunlock;
 	_rtld_addr_phdr;
 	_rtld_atfork_pre;

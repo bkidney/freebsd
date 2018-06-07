@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1989, 1993
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -90,9 +92,9 @@ static int
 crossmp_vop_lock1(struct vop_lock1_args *ap)
 {
 	struct vnode *vp;
-	struct lock *lk;
-	const char *file;
-	int flags, line;
+	struct lock *lk __unused;
+	const char *file __unused;
+	int flags, line __unused;
 
 	vp = ap->a_vp;
 	lk = vp->v_vnlock;
@@ -116,7 +118,7 @@ static int
 crossmp_vop_unlock(struct vop_unlock_args *ap)
 {
 	struct vnode *vp;
-	struct lock *lk;
+	struct lock *lk __unused;
 	int flags;
 
 	vp = ap->a_vp;
@@ -132,6 +134,7 @@ crossmp_vop_unlock(struct vop_unlock_args *ap)
 }
 
 static struct vop_vector crossmp_vnodeops = {
+	.vop_default =		&default_vnodeops,
 	.vop_islocked =		crossmp_vop_islocked,
 	.vop_lock1 =		crossmp_vop_lock1,
 	.vop_unlock =		crossmp_vop_unlock,
@@ -152,7 +155,7 @@ nameiinit(void *dummy __unused)
 	namei_zone = uma_zcreate("NAMEI", MAXPATHLEN, NULL, NULL, NULL, NULL,
 	    UMA_ALIGN_PTR, 0);
 	nt_zone = uma_zcreate("rentr", sizeof(struct nameicap_tracker),
-	    NULL, NULL, NULL, NULL, sizeof(void *), 0);
+	    NULL, NULL, NULL, NULL, UMA_ALIGN_PTR, 0);
 	getnewvnode("crossmp", NULL, &crossmp_vnodeops, &vp_crossmp);
 }
 SYSINIT(vfs, SI_SUB_VFS, SI_ORDER_SECOND, nameiinit, NULL);
@@ -498,7 +501,7 @@ namei(struct nameidata *ndp)
 			error = ENOENT;
 			break;
 		}
-		if (linklen + ndp->ni_pathlen >= MAXPATHLEN) {
+		if (linklen + ndp->ni_pathlen > MAXPATHLEN) {
 			if (ndp->ni_pathlen > 1)
 				uma_zfree(namei_zone, cp);
 			error = ENAMETOOLONG;
@@ -621,11 +624,13 @@ needs_exclusive_leaf(struct mount *mp, int flags)
 int
 lookup(struct nameidata *ndp)
 {
-	char *cp;		/* pointer into pathname argument */
+	char *cp;			/* pointer into pathname argument */
+	char *prev_ni_next;		/* saved ndp->ni_next */
 	struct vnode *dp = NULL;	/* the directory we are searching */
 	struct vnode *tdp;		/* saved dp */
 	struct mount *mp;		/* mount table entry */
 	struct prison *pr;
+	size_t prev_ni_pathlen;		/* saved ndp->ni_pathlen */
 	int docache;			/* == 0 do not cache last component */
 	int wantparent;			/* 1 => wantparent or lockparent flag */
 	int rdonly;			/* lookup read-only flag bit */
@@ -687,7 +692,11 @@ dirloop:
 	printf("{%s}: ", cnp->cn_nameptr);
 	*cp = c; }
 #endif
+	prev_ni_pathlen = ndp->ni_pathlen;
 	ndp->ni_pathlen -= cnp->cn_namelen;
+	KASSERT(ndp->ni_pathlen <= PATH_MAX,
+	    ("%s: ni_pathlen underflow to %zd\n", __func__, ndp->ni_pathlen));
+	prev_ni_next = ndp->ni_next;
 	ndp->ni_next = cp;
 
 	/*
@@ -1008,6 +1017,8 @@ nextname:
 	    ("lookup: invalid path state."));
 	if (relookup) {
 		relookup = 0;
+		ndp->ni_pathlen = prev_ni_pathlen;
+		ndp->ni_next = prev_ni_next;
 		if (ndp->ni_dvp != dp)
 			vput(ndp->ni_dvp);
 		else
@@ -1381,13 +1392,13 @@ kern_alternate_path(struct thread *td, const char *prefix, const char *path,
 		for (cp = &ptr[len] - 1; *cp != '/'; cp--);
 		*cp = '\0';
 
-		NDINIT(&nd, LOOKUP, FOLLOW, UIO_SYSSPACE, buf, td);
+		NDINIT(&nd, LOOKUP, NOFOLLOW, UIO_SYSSPACE, buf, td);
 		error = namei(&nd);
 		*cp = '/';
 		if (error != 0)
 			goto keeporig;
 	} else {
-		NDINIT(&nd, LOOKUP, FOLLOW, UIO_SYSSPACE, buf, td);
+		NDINIT(&nd, LOOKUP, NOFOLLOW, UIO_SYSSPACE, buf, td);
 
 		error = namei(&nd);
 		if (error != 0)

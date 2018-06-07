@@ -36,7 +36,9 @@
 #define RTWN_RIDX_OFDM36	9
 #define RTWN_RIDX_OFDM48	10
 #define RTWN_RIDX_OFDM54	11
-#define RTWN_RIDX_MCS(i)	(12 + (i))
+
+#define RTWN_RIDX_HT_MCS_SHIFT	12
+#define RTWN_RIDX_HT_MCS(i)	(RTWN_RIDX_HT_MCS_SHIFT + (i))
 
 #define RTWN_RIDX_COUNT		28
 #define RTWN_RIDX_UNKNOWN	(uint8_t)-1
@@ -53,8 +55,7 @@ static __inline uint8_t
 rate2ridx(uint8_t rate)
 {
 	if (rate & IEEE80211_RATE_MCS) {
-		/* 11n rates start at idx 12 */
-		return ((rate & 0xf) + 12);
+		return ((rate & 0xf) + RTWN_RIDX_HT_MCS_SHIFT);
 	}
 	switch (rate) {
 	/* 11g */
@@ -82,10 +83,10 @@ rtwn_ctl_mcsrate(const struct ieee80211_rate_table *rt, uint8_t ridx)
 	uint8_t cix, rate;
 
 	/* Check if we are using MCS rate. */
-	KASSERT(ridx >= RTWN_RIDX_MCS(0) && ridx != RTWN_RIDX_UNKNOWN,
+	KASSERT(ridx >= RTWN_RIDX_HT_MCS(0) && ridx != RTWN_RIDX_UNKNOWN,
 	    ("bad mcs rate index %d", ridx));
 
-	rate = (ridx - RTWN_RIDX_MCS(0)) | IEEE80211_RATE_MCS;
+	rate = (ridx - RTWN_RIDX_HT_MCS(0)) | IEEE80211_RATE_MCS;
 	cix = rt->info[rt->rateCodeToIndex[rate]].ctlRateIndex;
 	KASSERT(cix != (uint8_t)-1, ("rate %d (%d) has no info", rate, ridx));
 	return rt->info[cix].dot11Rate;

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
  * All rights reserved.
  *
@@ -41,7 +43,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -381,15 +383,6 @@ icmp6_error(struct mbuf *m, int type, int code, int param)
 	icmp6->icmp6_code = code;
 	icmp6->icmp6_pptr = htonl((u_int32_t)param);
 
-	/*
-	 * icmp6_reflect() is designed to be in the input path.
-	 * icmp6_error() can be called from both input and output path,
-	 * and if we are in output path rcvif could contain bogus value.
-	 * clear m->m_pkthdr.rcvif for safety, we should have enough scope
-	 * information in ip header (nip6).
-	 */
-	m->m_pkthdr.rcvif = NULL;
-
 	ICMP6STAT_INC(icp6s_outhist[type]);
 	icmp6_reflect(m, sizeof(struct ip6_hdr)); /* header order: IPv6 - ICMPv6 */
 
@@ -592,14 +585,13 @@ icmp6_input(struct mbuf **mp, int *offp, int proto)
 			n->m_pkthdr.len = n0len + (noff - off);
 			n->m_next = n0;
 		} else {
-			nip6 = mtod(n, struct ip6_hdr *);
 			IP6_EXTHDR_GET(nicmp6, struct icmp6_hdr *, n, off,
 			    sizeof(*nicmp6));
 			noff = off;
 		}
-		nicmp6->icmp6_type = ICMP6_ECHO_REPLY;
-		nicmp6->icmp6_code = 0;
 		if (n) {
+			nicmp6->icmp6_type = ICMP6_ECHO_REPLY;
+			nicmp6->icmp6_code = 0;
 			ICMP6STAT_INC(icp6s_reflect);
 			ICMP6STAT_INC(icp6s_outhist[ICMP6_ECHO_REPLY]);
 			icmp6_reflect(n, noff);
@@ -689,6 +681,7 @@ icmp6_input(struct mbuf **mp, int *offp, int proto)
 				 */
 				m_free(n);
 				n = NULL;
+				break;
 			}
 			maxhlen = M_TRAILINGSPACE(n) -
 			    (sizeof(*nip6) + sizeof(*nicmp6) + 4);
@@ -1684,10 +1677,10 @@ ni6_addrs(struct icmp6_nodeinfo *ni6, struct mbuf *m, struct ifnet **ifpp,
 	}
 
 	IFNET_RLOCK_NOSLEEP();
-	TAILQ_FOREACH(ifp, &V_ifnet, if_link) {
+	CK_STAILQ_FOREACH(ifp, &V_ifnet, if_link) {
 		addrsofif = 0;
 		IF_ADDR_RLOCK(ifp);
-		TAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
+		CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
 			if (ifa->ifa_addr->sa_family != AF_INET6)
 				continue;
 			ifa6 = (struct in6_ifaddr *)ifa;
@@ -1768,12 +1761,12 @@ ni6_store_addrs(struct icmp6_nodeinfo *ni6, struct icmp6_nodeinfo *nni6,
 		return (0);	/* needless to copy */
 
 	IFNET_RLOCK_NOSLEEP();
-	ifp = ifp0 ? ifp0 : TAILQ_FIRST(&V_ifnet);
+	ifp = ifp0 ? ifp0 : CK_STAILQ_FIRST(&V_ifnet);
   again:
 
-	for (; ifp; ifp = TAILQ_NEXT(ifp, if_link)) {
+	for (; ifp; ifp = CK_STAILQ_NEXT(ifp, if_link)) {
 		IF_ADDR_RLOCK(ifp);
-		TAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
+		CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
 			if (ifa->ifa_addr->sa_family != AF_INET6)
 				continue;
 			ifa6 = (struct in6_ifaddr *)ifa;
@@ -2147,7 +2140,7 @@ icmp6_reflect(struct mbuf *m, size_t off)
 		 * source address of the erroneous packet.
 		 */
 		in6_splitscope(&ip6->ip6_src, &dst6, &scopeid);
-		error = in6_selectsrc_addr(RT_DEFAULT_FIB, &dst6,
+		error = in6_selectsrc_addr(M_GETFIB(m), &dst6,
 		    scopeid, NULL, &src6, &hlim);
 
 		if (error) {
@@ -2181,7 +2174,7 @@ icmp6_reflect(struct mbuf *m, size_t off)
 	 */
 
 	m->m_flags &= ~(M_BCAST|M_MCAST);
-
+	m->m_pkthdr.rcvif = NULL;
 	ip6_output(m, NULL, NULL, 0, NULL, &outif, NULL);
 	if (outif)
 		icmp6_ifoutstat_inc(outif, type, code);
@@ -2249,6 +2242,10 @@ icmp6_redirect_input(struct mbuf *m, int off)
 	if (!V_icmp6_rediraccept)
 		goto freeit;
 
+	/* RFC 6980: Nodes MUST silently ignore fragments */
+	if(m->m_flags & M_FRAGMENTED)
+		goto freeit;
+
 #ifndef PULLDOWN_TEST
 	IP6_EXTHDR_CHECK(m, off, icmp6len,);
 	nd_rd = (struct nd_redirect *)((caddr_t)ip6 + off);
@@ -2289,7 +2286,7 @@ icmp6_redirect_input(struct mbuf *m, int off)
 	uint32_t scopeid;
 
 	in6_splitscope(&reddst6, &kdst, &scopeid);
-	if (fib6_lookup_nh_basic(RT_DEFAULT_FIB, &kdst, scopeid, 0, 0,&nh6)==0){
+	if (fib6_lookup_nh_basic(ifp->if_fib, &kdst, scopeid, 0, 0,&nh6)==0){
 		if ((nh6.nh_flags & NHF_GATEWAY) == 0) {
 			nd6log((LOG_ERR,
 			    "ICMP6 redirect rejected; no route "
@@ -2297,6 +2294,14 @@ icmp6_redirect_input(struct mbuf *m, int off)
 			    icmp6_redirect_diag(&src6, &reddst6, &redtgt6)));
 			goto bad;
 		}
+
+		/*
+		 * Embed scope zone id into next hop address, since
+		 * fib6_lookup_nh_basic() returns address without embedded
+		 * scope zone id.
+		 */
+		if (in6_setscope(&nh6.nh_addr, m->m_pkthdr.rcvif, NULL))
+			goto freeit;
 
 		if (IN6_ARE_ADDR_EQUAL(&src6, &nh6.nh_addr) == 0) {
 			nd6log((LOG_ERR,

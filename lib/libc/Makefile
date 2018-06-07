@@ -36,13 +36,14 @@ SHLIB_LDSCRIPT=libc_nossp.ldscript
 .endif
 SHLIB_LDSCRIPT_LINKS=libxnet.so
 WARNS?=	2
-CFLAGS+=-I${LIBC_SRCTOP}/include -I${LIBC_SRCTOP}/../../include
+CFLAGS+=-I${LIBC_SRCTOP}/include -I${SRCTOP}/include
 CFLAGS+=-I${LIBC_SRCTOP}/${LIBC_ARCH}
 .if ${MK_NLS} != "no"
 CFLAGS+=-DNLS
 .endif
 CLEANFILES+=tags
 INSTALL_PIC_ARCHIVE=
+BUILD_NOSSP_PIC_ARCHIVE=
 PRECIOUSLIB=
 
 .ifndef NO_THREAD_STACK_UNWIND
@@ -110,7 +111,7 @@ NOASM=
 .include "${LIBC_SRCTOP}/uuid/Makefile.inc"
 .include "${LIBC_SRCTOP}/xdr/Makefile.inc"
 .if (${LIBC_ARCH} == "arm" && \
-	(${MACHINE_ARCH:Marmv6*} == "" || (defined(CPUTYPE) && ${CPUTYPE:M*soft*}))) || \
+	(${MACHINE_ARCH:Marmv[67]*} == "" || (defined(CPUTYPE) && ${CPUTYPE:M*soft*}))) || \
     (${LIBC_ARCH} == "mips" && ${MACHINE_ARCH:Mmips*hf} == "") || \
     (${LIBC_ARCH} == "riscv" && ${MACHINE_ARCH:Mriscv*sf} != "")
 .include "${LIBC_SRCTOP}/softfloat/Makefile.inc"
@@ -173,9 +174,8 @@ libkern.${LIBC_ARCH}:: ${KMSRCS}
 	${CP} ${.ALLSRC} ${DESTDIR}/sys/libkern/${LIBC_ARCH}
 .endif
 
-.if ${MK_TESTS} != "no"
-SUBDIR+=	tests
-.endif
+HAS_TESTS=
+SUBDIR.${MK_TESTS}+= tests
 
 .include <bsd.lib.mk>
 
@@ -199,10 +199,6 @@ GENDIRDEPS_FILTER+= N${RELDIR:H}/msun
 
 # Disable warnings in contributed sources.
 CWARNFLAGS:=	${.IMPSRC:Ngdtoa_*.c:C/^.+$/${CWARNFLAGS}/:C/^$/-w/}
-# XXX For now, we don't allow libc to be compiled with
-# -fstack-protector-all because it breaks rtld.  We may want to make a librtld
-# in the future to circumvent this.
-SSP_CFLAGS:=	${SSP_CFLAGS:S/^-fstack-protector-all$/-fstack-protector/}
 # Disable stack protection for SSP symbols.
 SSP_CFLAGS:=	${.IMPSRC:N*/stack_protector.c:C/^.+$/${SSP_CFLAGS}/}
 # Generate stack unwinding tables for cancellation points

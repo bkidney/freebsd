@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2001 Dag-Erling Coïdan Smørgrav
  * All rights reserved.
  *
@@ -50,9 +52,9 @@ struct vnode;
 /*
  * Limits and constants
  */
-#define PFS_NAMELEN		24
+#define PFS_NAMELEN		48
 #define PFS_FSNAMELEN		16	/* equal to MFSNAMELEN */
-#define PFS_DELEN		(8 + PFS_NAMELEN)
+#define PFS_DELEN		(offsetof(struct dirent, d_name) + PFS_NAMELEN)
 
 typedef enum {
 	pfstype_none = 0,
@@ -81,7 +83,6 @@ typedef enum {
  */
 struct pfs_info;
 struct pfs_node;
-struct pfs_bitmap;
 
 /*
  * Init / uninit callback
@@ -120,8 +121,6 @@ struct vattr;
 #define PFS_ATTR_PROTO(name) \
 	int name(PFS_ATTR_ARGS);
 typedef int (*pfs_attr_t)(PFS_ATTR_ARGS);
-
-struct pfs_bitmap;		/* opaque */
 
 /*
  * Visibility callback
@@ -273,7 +272,7 @@ int		 pfs_destroy	(struct pfs_node *pn);
 /*
  * Now for some initialization magic...
  */
-#define PSEUDOFS(name, version, jflag)					\
+#define PSEUDOFS(name, version, flags)					\
 									\
 static struct pfs_info name##_info = {					\
 	#name,								\
@@ -283,8 +282,6 @@ static struct pfs_info name##_info = {					\
 									\
 static int								\
 _##name##_mount(struct mount *mp) {					\
-        if (jflag && !prison_allow(curthread->td_ucred, jflag))		\
-                return (EPERM);						\
 	return (pfs_mount(&name##_info, mp));				\
 }									\
 									\
@@ -307,7 +304,7 @@ static struct vfsops name##_vfsops = {					\
 	.vfs_uninit =		_##name##_uninit,			\
 	.vfs_unmount =		pfs_unmount,				\
 };									\
-VFS_SET(name##_vfsops, name, VFCF_SYNTHETIC | (jflag ? VFCF_JAIL : 0));	\
+VFS_SET(name##_vfsops, name, VFCF_SYNTHETIC | flags);			\
 MODULE_VERSION(name, version);						\
 MODULE_DEPEND(name, pseudofs, 1, 1, 1);
 

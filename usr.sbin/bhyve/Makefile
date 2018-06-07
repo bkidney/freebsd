@@ -2,6 +2,8 @@
 # $FreeBSD$
 #
 
+.include <src.opts.mk>
+
 PROG=	bhyve
 PACKAGE=	bhyve
 
@@ -22,6 +24,7 @@ SRCS=	\
 	consport.c		\
 	dbgport.c		\
 	fwctl.c			\
+	gdb.c			\
 	inout.c			\
 	ioapic.c		\
 	mem.c			\
@@ -63,9 +66,19 @@ SRCS+=	vmm_instruction_emul.c
 
 LIBADD=	vmmapi md pthread z
 
+.if ${MK_OPENSSL} == "no"
+CFLAGS+=-DNO_OPENSSL
+.else
+LIBADD+=	crypto
+.endif
+
 CFLAGS+= -I${BHYVE_SYSDIR}/sys/dev/e1000
 CFLAGS+= -I${BHYVE_SYSDIR}/sys/dev/mii
 CFLAGS+= -I${BHYVE_SYSDIR}/sys/dev/usb/controller
+
+.ifdef GDB_LOG
+CFLAGS+=-DGDB_LOG
+.endif
 
 WARNS?=	2
 

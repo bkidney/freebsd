@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011-2013 Alexander Motin <mav@FreeBSD.org>
  * Copyright (c) 2006-2007 Matthew Jacob <mjacob@FreeBSD.org>
  * All rights reserved.
@@ -923,6 +925,7 @@ g_multipath_ctl_add_name(struct gctl_req *req, struct g_class *mp,
 	struct g_provider *pp;
 	const char *mpname;
 	static const char devpf[6] = "/dev/";
+	int error;
 
 	g_topology_assert();
 
@@ -972,10 +975,9 @@ g_multipath_ctl_add_name(struct gctl_req *req, struct g_class *mp,
 		return;
 	}
 
-	/*
-	 * Now add....
-	 */
-	(void) g_multipath_add_disk(gp, pp);
+	error = g_multipath_add_disk(gp, pp);
+	if (error != 0)
+		gctl_error(req, "Provider addition error: %d", error);
 }
 
 static void
@@ -1530,3 +1532,4 @@ g_multipath_dumpconf(struct sbuf *sb, const char *indent, struct g_geom *gp,
 }
 
 DECLARE_GEOM_CLASS(g_multipath_class, g_multipath);
+MODULE_VERSION(geom_multipath, 0);

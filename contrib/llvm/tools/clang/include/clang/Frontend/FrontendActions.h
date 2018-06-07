@@ -80,21 +80,29 @@ protected:
 
   bool hasASTFileSupport() const override { return false; }
 
+  bool shouldEraseOutputFiles() override;
+
 public:
   /// \brief Compute the AST consumer arguments that will be used to
   /// create the PCHGenerator instance returned by CreateASTConsumer.
   ///
-  /// \returns true if an error occurred, false otherwise.
-  static std::unique_ptr<raw_pwrite_stream>
-  ComputeASTConsumerArguments(CompilerInstance &CI, StringRef InFile,
-                              std::string &Sysroot, std::string &OutputFile);
+  /// \returns false if an error occurred, true otherwise.
+  static bool ComputeASTConsumerArguments(CompilerInstance &CI,
+                                          std::string &Sysroot);
+
+  /// \brief Creates file to write the PCH into and returns a stream to write it
+  /// into. On error, returns null.
+  static std::unique_ptr<llvm::raw_pwrite_stream>
+  CreateOutputFile(CompilerInstance &CI, StringRef InFile,
+                   std::string &OutputFile);
+
+  bool BeginSourceFileAction(CompilerInstance &CI) override;
 };
 
 class GenerateModuleAction : public ASTFrontendAction {
-  clang::Module *Module;
-  const FileEntry *ModuleMapForUniquing;
-  bool IsSystem;
-  
+  virtual std::unique_ptr<raw_pwrite_stream>
+  CreateOutputFile(CompilerInstance &CI, StringRef InFile) = 0;
+
 protected:
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
                                                  StringRef InFile) override;
@@ -104,22 +112,22 @@ protected:
   }
 
   bool hasASTFileSupport() const override { return false; }
+};
 
-public:
-  GenerateModuleAction(const FileEntry *ModuleMap = nullptr,
-                       bool IsSystem = false)
-    : ASTFrontendAction(), ModuleMapForUniquing(ModuleMap), IsSystem(IsSystem)
-  { }
+class GenerateModuleFromModuleMapAction : public GenerateModuleAction {
+private:
+  bool BeginSourceFileAction(CompilerInstance &CI) override;
 
-  bool BeginSourceFileAction(CompilerInstance &CI, StringRef Filename) override;
-
-  /// \brief Compute the AST consumer arguments that will be used to
-  /// create the PCHGenerator instance returned by CreateASTConsumer.
-  ///
-  /// \returns true if an error occurred, false otherwise.
   std::unique_ptr<raw_pwrite_stream>
-  ComputeASTConsumerArguments(CompilerInstance &CI, StringRef InFile,
-                              std::string &Sysroot, std::string &OutputFile);
+  CreateOutputFile(CompilerInstance &CI, StringRef InFile) override;
+};
+
+class GenerateModuleInterfaceAction : public GenerateModuleAction {
+private:
+  bool BeginSourceFileAction(CompilerInstance &CI) override;
+
+  std::unique_ptr<raw_pwrite_stream>
+  CreateOutputFile(CompilerInstance &CI, StringRef InFile) override;
 };
 
 class SyntaxOnlyAction : public ASTFrontendAction {
@@ -138,6 +146,7 @@ class DumpModuleInfoAction : public ASTFrontendAction {
 protected:
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
                                                  StringRef InFile) override;
+  bool BeginInvocation(CompilerInstance &CI) override;
   void ExecuteAction() override;
 
 public:
@@ -177,8 +186,7 @@ protected:
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
                                                  StringRef InFile) override;
 
-  bool BeginSourceFileAction(CompilerInstance &CI,
-                             StringRef Filename) override;
+  bool BeginSourceFileAction(CompilerInstance &CI) override;
 
   void ExecuteAction() override;
   void EndSourceFileAction() override;

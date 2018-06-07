@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2001-2007, by Cisco Systems, Inc. All rights reserved.
  * Copyright (c) 2008-2012, by Randall Stewart. All rights reserved.
  * Copyright (c) 2008-2012, by Michael Tuexen. All rights reserved.
@@ -53,7 +55,7 @@ void sctp_gather_internal_ifa_flags(struct sctp_ifa *ifa);
 #ifdef  SCTP_PACKET_LOGGING
 
 void sctp_packet_log(struct mbuf *m);
-int sctp_copy_out_packet_log(uint8_t * target, int length);
+int sctp_copy_out_packet_log(uint8_t *target, int length);
 
 #endif
 

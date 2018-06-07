@@ -62,7 +62,7 @@
 #include "cuda.h"
 #if !defined(CUDA_VERSION)
 #error "cuda.h did not define CUDA_VERSION"
-#elif CUDA_VERSION < 7000 || CUDA_VERSION > 7050
+#elif CUDA_VERSION < 7000 || CUDA_VERSION > 9000
 #error "Unsupported CUDA version!"
 #endif
 
@@ -72,9 +72,9 @@
 #define __CUDA_ARCH__ 350
 #endif
 
-#include "cuda_builtin_vars.h"
+#include "__clang_cuda_builtin_vars.h"
 
-// No need for device_launch_parameters.h as cuda_builtin_vars.h above
+// No need for device_launch_parameters.h as __clang_cuda_builtin_vars.h above
 // has taken care of builtin variables declared in the file.
 #define __DEVICE_LAUNCH_PARAMETERS_H__
 
@@ -86,7 +86,11 @@
 #define __COMMON_FUNCTIONS_H__
 
 #undef __CUDACC__
+#if CUDA_VERSION < 9000
 #define __CUDABE__
+#else
+#define __CUDA_LIBDEVICE__
+#endif
 // Disables definitions of device-side runtime support stubs in
 // cuda_device_runtime_api.h
 #include "driver_types.h"
@@ -94,6 +98,7 @@
 #include "host_defines.h"
 
 #undef __CUDABE__
+#undef __CUDA_LIBDEVICE__
 #define __CUDACC__
 #include "cuda_runtime.h"
 
@@ -105,7 +110,9 @@
 #define __nvvm_memcpy(s, d, n, a) __builtin_memcpy(s, d, n)
 #define __nvvm_memset(d, c, n, a) __builtin_memset(d, c, n)
 
+#if CUDA_VERSION < 9000
 #include "crt/device_runtime.h"
+#endif
 #include "crt/host_runtime.h"
 // device_runtime.h defines __cxa_* macros that will conflict with
 // cxxabi.h.
@@ -113,12 +120,22 @@
 #undef __cxa_vec_ctor
 #undef __cxa_vec_cctor
 #undef __cxa_vec_dtor
+#undef __cxa_vec_new
 #undef __cxa_vec_new2
 #undef __cxa_vec_new3
 #undef __cxa_vec_delete2
 #undef __cxa_vec_delete
 #undef __cxa_vec_delete3
 #undef __cxa_pure_virtual
+
+// math_functions.hpp expects this host function be defined on MacOS, but it
+// ends up not being there because of the games we play here.  Just define it
+// ourselves; it's simple enough.
+#ifdef __APPLE__
+inline __host__ double __signbitd(double x) {
+  return std::signbit(x);
+}
+#endif
 
 // We need decls for functions in CUDA's libdevice with __device__
 // attribute only. Alas they come either as __host__ __device__ or
@@ -135,13 +152,39 @@
 // the headers we're about to include.
 #define __host__ UNEXPECTED_HOST_ATTRIBUTE
 
+// CUDA 8.0.41 relies on __USE_FAST_MATH__ and __CUDA_PREC_DIV's values.
+// Previous versions used to check whether they are defined or not.
+// CU_DEVICE_INVALID macro is only defined in 8.0.41, so we use it
+// here to detect the switch.
+
+#if defined(CU_DEVICE_INVALID)
+#if !defined(__USE_FAST_MATH__)
+#define __USE_FAST_MATH__ 0
+#endif
+
+#if !defined(__CUDA_PREC_DIV)
+#define __CUDA_PREC_DIV 0
+#endif
+#endif
+
 // device_functions.hpp and math_functions*.hpp use 'static
 // __forceinline__' (with no __device__) for definitions of device
 // functions. Temporarily redefine __forceinline__ to include
 // __device__.
 #pragma push_macro("__forceinline__")
 #define __forceinline__ __device__ __inline__ __attribute__((always_inline))
+
+#pragma push_macro("__float2half_rn")
+#if CUDA_VERSION >= 9000
+// CUDA-9 has conflicting prototypes for __float2half_rn(float f) in
+// cuda_fp16.h[pp] and device_functions.hpp. We need to get the one in
+// device_functions.hpp out of the way.
+#define __float2half_rn  __float2half_rn_disabled
+#endif
+
 #include "device_functions.hpp"
+#pragma pop_macro("__float2half_rn")
+
 
 // math_function.hpp uses the __USE_FAST_MATH__ macro to determine whether we
 // get the slow-but-accurate or fast-but-inaccurate versions of functions like
@@ -151,7 +194,7 @@
 // slow divides), so we need to scope our define carefully here.
 #pragma push_macro("__USE_FAST_MATH__")
 #if defined(__CLANG_CUDA_APPROX_TRANSCENDENTALS__)
-#define __USE_FAST_MATH__
+#define __USE_FAST_MATH__ 1
 #endif
 #include "math_functions.hpp"
 #pragma pop_macro("__USE_FAST_MATH__")
@@ -207,6 +250,11 @@ static inline __device__ void __brkpt(int __c) { __brkpt(); }
 // hardware, seems to generate faster machine code because ptxas can more easily
 // reason about our code.
 
+#if CUDA_VERSION >= 8000
+#include "sm_60_atomic_functions.hpp"
+#include "sm_61_intrinsics.hpp"
+#endif
+
 #undef __MATH_FUNCTIONS_HPP__
 
 // math_functions.hpp defines ::signbit as a __host__ __device__ function.  This
@@ -217,7 +265,23 @@ static inline __device__ void __brkpt(int __c) { __brkpt(); }
 #pragma push_macro("__GNUC__")
 #undef __GNUC__
 #define signbit __ignored_cuda_signbit
+
+// CUDA-9 omits device-side definitions of some math functions if it sees
+// include guard from math.h wrapper from libstdc++. We have to undo the header
+// guard temporarily to get the definitions we need.
+#pragma push_macro("_GLIBCXX_MATH_H")
+#pragma push_macro("_LIBCPP_VERSION")
+#if CUDA_VERSION >= 9000
+#undef _GLIBCXX_MATH_H
+// We also need to undo another guard that checks for libc++ 3.8+
+#ifdef _LIBCPP_VERSION
+#define _LIBCPP_VERSION 3700
+#endif
+#endif
+
 #include "math_functions.hpp"
+#pragma pop_macro("_GLIBCXX_MATH_H")
+#pragma pop_macro("_LIBCPP_VERSION")
 #pragma pop_macro("__GNUC__")
 #pragma pop_macro("signbit")
 
@@ -267,8 +331,8 @@ __device__ static inline void *malloc(size_t __size) {
 }
 } // namespace std
 
-// Out-of-line implementations from cuda_builtin_vars.h.  These need to come
-// after we've pulled in the definition of uint3 and dim3.
+// Out-of-line implementations from __clang_cuda_builtin_vars.h.  These need to
+// come after we've pulled in the definition of uint3 and dim3.
 
 __device__ inline __cuda_builtin_threadIdx_t::operator uint3() const {
   uint3 ret;
@@ -296,13 +360,14 @@ __device__ inline __cuda_builtin_gridDim_t::operator dim3() const {
 
 #include <__clang_cuda_cmath.h>
 #include <__clang_cuda_intrinsics.h>
+#include <__clang_cuda_complex_builtins.h>
 
 // curand_mtgp32_kernel helpfully redeclares blockDim and threadIdx in host
 // mode, giving them their "proper" types of dim3 and uint3.  This is
-// incompatible with the types we give in cuda_builtin_vars.h.  As as hack,
-// force-include the header (nvcc doesn't include it by default) but redefine
-// dim3 and uint3 to our builtin types.  (Thankfully dim3 and uint3 are only
-// used here for the redeclarations of blockDim and threadIdx.)
+// incompatible with the types we give in __clang_cuda_builtin_vars.h.  As as
+// hack, force-include the header (nvcc doesn't include it by default) but
+// redefine dim3 and uint3 to our builtin types.  (Thankfully dim3 and uint3 are
+// only used here for the redeclarations of blockDim and threadIdx.)
 #pragma push_macro("dim3")
 #pragma push_macro("uint3")
 #define dim3 __cuda_builtin_blockDim_t

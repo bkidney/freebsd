@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001 Atsushi Onoe
  * Copyright (c) 2002-2008 Sam Leffler, Errno Consulting
  * All rights reserved.
@@ -786,4 +788,19 @@ ieee80211_crypto_reload_keys(struct ieee80211com *ic)
 	 * Unicast keys.
 	 */
 	ieee80211_iterate_nodes(&ic->ic_sta, load_ucastkey, NULL);
+}
+
+/*
+ * Set the default key index for WEP, or KEYIX_NONE for no default TX key.
+ *
+ * This should be done as part of a key update block (iv_key_update_begin /
+ * iv_key_update_end.)
+ */
+void
+ieee80211_crypto_set_deftxkey(struct ieee80211vap *vap, ieee80211_keyix kid)
+{
+
+	/* XXX TODO: assert we're in a key update block */
+
+	vap->iv_update_deftxkey(vap, kid);
 }

@@ -64,7 +64,6 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_map.h>
 #include <vm/vm_object.h>
 #include <vm/vm_pager.h>
-#include <vm/vm_phys.h>
 
 #include <machine/md_var.h>
 
@@ -415,7 +414,7 @@ gntdev_alloc_gref(struct ioctl_gntdev_alloc_gref *arg)
 	/* Copy the output values. */
 	arg->index = file_offset;
 	for (i = 0; i < arg->count; i++)
-		arg->gref_ids[i] = grefs[i].gref_id;
+		suword32(&arg->gref_ids[i], grefs[i].gref_id);
 
 	/* Modify the per user private data. */
 	mtx_lock(&priv_user->user_data_lock);
@@ -660,16 +659,27 @@ gntdev_map_grant_ref(struct ioctl_gntdev_map_grant_ref *arg)
 	gmap->grant_map_ops =
 	    malloc(sizeof(struct gnttab_map_grant_ref) * arg->count,
 	        M_GNTDEV, M_WAITOK | M_ZERO);
-	
-	error = get_file_offset(priv_user, arg->count, &gmap->file_index);
-	if (error != 0)
-		return (error);
 
 	for (i = 0; i < arg->count; i++) {
-		gmap->grant_map_ops[i].dom = arg->refs[i].domid;
-		gmap->grant_map_ops[i].ref = arg->refs[i].ref;
+		struct ioctl_gntdev_grant_ref ref;
+
+		error = copyin(&arg->refs[i], &ref, sizeof(ref));
+		if (error != 0) {
+			free(gmap->grant_map_ops, M_GNTDEV);
+			free(gmap, M_GNTDEV);
+			return (error);
+		}
+		gmap->grant_map_ops[i].dom = ref.domid;
+		gmap->grant_map_ops[i].ref = ref.ref;
 		gmap->grant_map_ops[i].handle = -1;
 		gmap->grant_map_ops[i].flags = GNTMAP_host_map;
+	}
+
+	error = get_file_offset(priv_user, arg->count, &gmap->file_index);
+	if (error != 0) {
+		free(gmap->grant_map_ops, M_GNTDEV);
+		free(gmap, M_GNTDEV);
+		return (error);
 	}
 
 	mtx_lock(&priv_user->user_data_lock);
@@ -743,26 +753,34 @@ gntdev_get_offset_for_vaddr(struct ioctl_gntdev_get_offset_for_vaddr *arg,
 	vm_prot_t prot;
 	boolean_t wired;
 	struct gntdev_gmap *gmap;
+	int rc;
 
 	map = &td->td_proc->p_vmspace->vm_map;
 	error = vm_map_lookup(&map, arg->vaddr, VM_PROT_NONE, &entry,
 		    &mem, &pindex, &prot, &wired);
 	if (error != KERN_SUCCESS)
 		return (EINVAL);
-	vm_map_lookup_done(map, entry);
 
 	if ((mem->type != OBJT_MGTDEVICE) ||
-	    (mem->un_pager.devp.ops != &gntdev_gmap_pg_ops))
-		return (EINVAL);
+	    (mem->un_pager.devp.ops != &gntdev_gmap_pg_ops)) {
+		rc = EINVAL;
+		goto out;
+	}
 
 	gmap = mem->handle;
 	if (gmap == NULL ||
-	    (entry->end - entry->start) != (gmap->count * PAGE_SIZE))
-		return (EINVAL);
+	    (entry->end - entry->start) != (gmap->count * PAGE_SIZE)) {
+		rc = EINVAL;
+		goto out;
+	}
 
 	arg->count = gmap->count;
 	arg->offset = gmap->file_index;
-	return (0);
+	rc = 0;
+
+out:
+	vm_map_lookup_done(map, entry);
+	return (rc);
 }
 
 /*-------------------- Grant Mapping Pager  ----------------------------------*/
@@ -796,8 +814,8 @@ gntdev_gmap_pg_fault(vm_object_t object, vm_ooffset_t offset, int prot,
 
 	relative_offset = offset - gmap->file_index;
 
-	pidx = OFF_TO_IDX(offset);
-	ridx = OFF_TO_IDX(relative_offset);
+	pidx = UOFF_TO_IDX(offset);
+	ridx = UOFF_TO_IDX(relative_offset);
 	if (ridx >= gmap->count ||
 	    gmap->grant_map_ops[ridx].status != GNTST_okay)
 		return (VM_PAGER_FAIL);
@@ -1067,7 +1085,7 @@ mmap_gref(struct per_user_data *priv_user, struct gntdev_gref *gref_start,
 			break;
 
 		vm_page_insert(gref->page, mem_obj,
-		    OFF_TO_IDX(gref->file_index));
+		    UOFF_TO_IDX(gref->file_index));
 
 		count--;
 	}
@@ -1207,7 +1225,7 @@ gntdev_mmap_single(struct cdev *cdev, vm_ooffset_t *offset, vm_size_t size,
 	if (error != 0)
 		return (EINVAL);
 
-	count = OFF_TO_IDX(size);
+	count = UOFF_TO_IDX(size);
 
 	gref_start = gntdev_find_grefs(priv_user, *offset, count);
 	if (gref_start) {

@@ -26,6 +26,10 @@ installfiles: installfiles-${group}
 
 ${group}OWN?=	${SHAREOWN}
 ${group}GRP?=	${SHAREGRP}
+.if ${MK_INSTALL_AS_USER} == "yes"
+${group}OWN=	${SHAREOWN}
+${group}GRP=	${SHAREGRP}
+.endif
 ${group}MODE?=	${SHAREMODE}
 ${group}DIR?=	${BINDIR}
 STAGE_SETS+=	${group:C,[/*],_,g}
@@ -46,6 +50,10 @@ _${group}FILES=
     defined(${group}NAME_${file:T}) || defined(${group}NAME)
 ${group}OWN_${file:T}?=	${${group}OWN}
 ${group}GRP_${file:T}?=	${${group}GRP}
+.if ${MK_INSTALL_AS_USER} == "yes"
+${group}OWN_${file:T}=	${SHAREOWN}
+${group}GRP_${file:T}=	${SHAREGRP}
+.endif
 ${group}MODE_${file:T}?=	${${group}MODE}
 ${group}DIR_${file:T}?=	${${group}DIR}
 .if defined(${group}NAME)
@@ -59,7 +67,7 @@ STAGE_AS_${file:T}= ${${group}NAME_${file:T}}
 STAGE_DIR.${file:T}= ${STAGE_OBJTOP}${${group}DIR_${file:T}}
 stage_as.${file:T}: ${file}
 
-installfiles-${group}: _${group}INS_${file:T}
+installfiles-${group}: installdirs-${group} _${group}INS_${file:T}
 _${group}INS_${file:T}: ${file}
 	${INSTALL} ${${group}TAG_ARGS} -o ${${group}OWN_${.ALLSRC:T}} \
 	    -g ${${group}GRP_${.ALLSRC:T}} -m ${${group}MODE_${.ALLSRC:T}} \
@@ -69,10 +77,24 @@ _${group}INS_${file:T}: ${file}
 _${group}FILES+= ${file}
 .endif
 .endfor
+
+
+installdirs-${group}:
+	@echo installing dirs ${group}DIR ${${group}DIR}
+.for dir in ${${group}DIR}
+.if defined(NO_ROOT)
+	${INSTALL} ${${group}TAG_ARGS} -d ${DESTDIR}${dir}
+.else
+	${INSTALL} ${${group}TAG_ARGS} -d -o ${DIROWN} -g ${DIRGRP} \
+		-m ${DIRMODE} ${DESTDIR}${dir}
+.endif
+.endfor
+
+
 .if !empty(_${group}FILES)
 stage_files.${group}: ${_${group}FILES}
 
-installfiles-${group}: _${group}INS
+installfiles-${group}: installdirs-${group} _${group}INS
 _${group}INS: ${_${group}FILES}
 .if defined(${group}NAME)
 	${INSTALL} ${${group}TAG_ARGS} -o ${${group}OWN} -g ${${group}GRP} \

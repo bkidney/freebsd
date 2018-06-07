@@ -1,6 +1,6 @@
 /******************************************************************************
 
-  Copyright (c) 2013-2015, Intel Corporation 
+  Copyright (c) 2013-2017, Intel Corporation
   All rights reserved.
   
   Redistribution and use in source and binary forms, with or without 
@@ -59,6 +59,8 @@ i40e_status
 i40e_free_virt_mem(struct i40e_hw *hw, struct i40e_virt_mem *mem)
 {
 	free(mem->va, M_DEVBUF);
+	mem->va = NULL;
+
 	return(0);
 }
 
@@ -189,13 +191,69 @@ void
 i40e_debug_shared(struct i40e_hw *hw, enum i40e_debug_mask mask, char *fmt, ...)
 {
 	va_list args;
+	device_t dev;
 
 	if (!(mask & ((struct i40e_hw *)hw)->debug_mask))
 		return;
 
+	dev = ((struct i40e_osdep *)hw->back)->dev;
+
+	/* Re-implement device_printf() */
+	device_print_prettyname(dev);
 	va_start(args, fmt);
-	device_printf(((struct i40e_osdep *)hw->back)->dev, fmt, args);
+	vprintf(fmt, args);
 	va_end(args);
+}
+
+const char *
+ixl_vc_opcode_str(uint16_t op)
+{
+	switch (op) {
+	case VIRTCHNL_OP_VERSION:
+		return ("VERSION");
+	case VIRTCHNL_OP_RESET_VF:
+		return ("RESET_VF");
+	case VIRTCHNL_OP_GET_VF_RESOURCES:
+		return ("GET_VF_RESOURCES");
+	case VIRTCHNL_OP_CONFIG_TX_QUEUE:
+		return ("CONFIG_TX_QUEUE");
+	case VIRTCHNL_OP_CONFIG_RX_QUEUE:
+		return ("CONFIG_RX_QUEUE");
+	case VIRTCHNL_OP_CONFIG_VSI_QUEUES:
+		return ("CONFIG_VSI_QUEUES");
+	case VIRTCHNL_OP_CONFIG_IRQ_MAP:
+		return ("CONFIG_IRQ_MAP");
+	case VIRTCHNL_OP_ENABLE_QUEUES:
+		return ("ENABLE_QUEUES");
+	case VIRTCHNL_OP_DISABLE_QUEUES:
+		return ("DISABLE_QUEUES");
+	case VIRTCHNL_OP_ADD_ETH_ADDR:
+		return ("ADD_ETH_ADDR");
+	case VIRTCHNL_OP_DEL_ETH_ADDR:
+		return ("DEL_ETH_ADDR");
+	case VIRTCHNL_OP_ADD_VLAN:
+		return ("ADD_VLAN");
+	case VIRTCHNL_OP_DEL_VLAN:
+		return ("DEL_VLAN");
+	case VIRTCHNL_OP_CONFIG_PROMISCUOUS_MODE:
+		return ("CONFIG_PROMISCUOUS_MODE");
+	case VIRTCHNL_OP_GET_STATS:
+		return ("GET_STATS");
+	case VIRTCHNL_OP_RSVD:
+		return ("RSVD");
+	case VIRTCHNL_OP_EVENT:
+		return ("EVENT");
+	case VIRTCHNL_OP_CONFIG_RSS_KEY:
+		return ("CONFIG_RSS_KEY");
+	case VIRTCHNL_OP_CONFIG_RSS_LUT:
+		return ("CONFIG_RSS_LUT");
+	case VIRTCHNL_OP_GET_RSS_HENA_CAPS:
+		return ("GET_RSS_HENA_CAPS");
+	case VIRTCHNL_OP_SET_RSS_HENA:
+		return ("SET_RSS_HENA");
+	default:
+		return ("UNKNOWN");
+	}
 }
 
 u16

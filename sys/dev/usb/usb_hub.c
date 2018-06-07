@@ -1,5 +1,7 @@
 /* $FreeBSD$ */
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ *
  * Copyright (c) 1998 The NetBSD Foundation, Inc. All rights reserved.
  * Copyright (c) 1998 Lennart Augustsson. All rights reserved.
  * Copyright (c) 2008-2010 Hans Petter Selasky. All rights reserved.
@@ -100,7 +102,9 @@ SYSCTL_INT(_hw_usb, OID_AUTO, power_timeout, CTLFLAG_RWTUN,
 #if USB_HAVE_DISABLE_ENUM
 static int usb_disable_enumeration = 0;
 SYSCTL_INT(_hw_usb, OID_AUTO, disable_enumeration, CTLFLAG_RWTUN,
-    &usb_disable_enumeration, 0, "Set to disable all USB device enumeration.");
+    &usb_disable_enumeration, 0, "Set to disable all USB device enumeration. "
+	"This can secure against USB devices turning evil, "
+	"for example a USB memory stick becoming a USB keyboard.");
 
 static int usb_disable_port_power = 0;
 SYSCTL_INT(_hw_usb, OID_AUTO, disable_port_power, CTLFLAG_RWTUN,
@@ -2297,7 +2301,7 @@ usb_needs_explore(struct usb_bus *bus, uint8_t do_probe)
  *	usb_needs_explore_all
  *
  * This function is called whenever a new driver is loaded and will
- * cause that all USB busses are re-explored.
+ * cause that all USB buses are re-explored.
  *------------------------------------------------------------------------*/
 void
 usb_needs_explore_all(void)
@@ -2315,7 +2319,7 @@ usb_needs_explore_all(void)
 		return;
 	}
 	/*
-	 * Explore all USB busses in parallel.
+	 * Explore all USB buses in parallel.
 	 */
 	max = devclass_get_maxunit(dc);
 	while (max >= 0) {

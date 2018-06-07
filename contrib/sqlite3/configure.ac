@@ -10,8 +10,9 @@
 #
 
 AC_PREREQ(2.61)
-AC_INIT(sqlite, 3.14.1, http://www.sqlite.org)
+AC_INIT(sqlite, 3.23.1, http://www.sqlite.org)
 AC_CONFIG_SRCDIR([sqlite3.c])
+AC_CONFIG_AUX_DIR([.])
 
 # Use automake.
 AM_INIT_AUTOMAKE([foreign])
@@ -55,9 +56,9 @@ AS_IF([ test x"$enable_editline" != xno ],[
     LIBS=""
     AC_SEARCH_LIBS([readline],[edit],[
       AC_DEFINE([HAVE_EDITLINE],1,Define to use BSD editline)
-      READLINE_LIBS=$LIBS
+      READLINE_LIBS="$LIBS -ltinfo"
       enable_readline=no
-    ])
+    ],[],[-ltinfo])
     AS_UNSET(ac_cv_search_readline)
     LIBS=$sLIBS
   ])
@@ -163,6 +164,13 @@ AC_SUBST(EXTRA_SHELL_OBJ)
 #-----------------------------------------------------------------------
 
 AC_CHECK_FUNCS(posix_fallocate)
+AC_CHECK_HEADERS(zlib.h,[
+  AC_SEARCH_LIBS(deflate,z,[ZLIB_FLAGS="-DSQLITE_HAVE_ZLIB"])
+])
+AC_SUBST(ZLIB_FLAGS)
+
+AC_SEARCH_LIBS(system,,,[SHELL_CFLAGS="-DSQLITE_NOHAVE_SYSTEM"])
+AC_SUBST(SHELL_CFLAGS)
 
 #-----------------------------------------------------------------------
 # UPDATE: Maybe it's better if users just set CFLAGS before invoking

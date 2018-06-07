@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
  *
@@ -30,16 +32,23 @@
 __FBSDID("$FreeBSD$");
 
 #include <sys/types.h>
+#ifndef WITHOUT_CAPSICUM
+#include <sys/capsicum.h>
+#endif
 #include <sys/mman.h>
 #include <sys/time.h>
 
 #include <machine/atomic.h>
 #include <machine/segments.h>
 
+#ifndef WITHOUT_CAPSICUM
+#include <capsicum_helpers.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <err.h>
+#include <errno.h>
 #include <libgen.h>
 #include <unistd.h>
 #include <assert.h>
@@ -48,8 +57,12 @@ __FBSDID("$FreeBSD$");
 #include <pthread_np.h>
 #include <sysexits.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #include <machine/vmm.h>
+#ifndef WITHOUT_CAPSICUM
+#include <machine/vmm_dev.h>
+#endif
 #include <vmmapi.h>
 
 #include "bhyverun.h"
@@ -58,6 +71,7 @@ __FBSDID("$FreeBSD$");
 #include "inout.h"
 #include "dbgport.h"
 #include "fwctl.h"
+#include "gdb.h"
 #include "ioapic.h"
 #include "mem.h"
 #include "mevent.h"
@@ -81,6 +95,8 @@ extern int vmexit_task_switch(struct vmctx *, struct vm_exit *, int *vcpu);
 char *vmname;
 
 int guest_ncpus;
+uint16_t cores, maxcpus, sockets, threads;
+
 char *guest_uuid_str;
 
 static int guest_vmexit_on_hlt, guest_vmexit_on_pause;
@@ -125,11 +141,13 @@ usage(int code)
 {
 
         fprintf(stderr,
-                "Usage: %s [-abehuwxACHPSWY] [-c vcpus] [-g <gdb port>] [-l <lpc>]\n"
+		"Usage: %s [-abehuwxACHPSWY]\n"
+		"       %*s [-c [[cpus=]numcpus][,sockets=n][,cores=n][,threads=n]]\n"
+		"       %*s [-g <gdb port>] [-l <lpc>]\n"
 		"       %*s [-m mem] [-p vcpu:hostcpu] [-s <pci>] [-U uuid] <vm>\n"
 		"       -a: local apic is in xAPIC mode (deprecated)\n"
 		"       -A: create ACPI tables\n"
-		"       -c: # cpus (default 1)\n"
+		"       -c: number of cpus and/or topology specification\n"
 		"       -C: include guest memory in core file\n"
 		"       -e: exit on unhandled I/O access\n"
 		"       -g: gdb port\n"
@@ -147,9 +165,98 @@ usage(int code)
 		"       -W: force virtio to use single-vector MSI\n"
 		"       -x: local apic is in x2APIC mode\n"
 		"       -Y: disable MPtable generation\n",
-		progname, (int)strlen(progname), "");
+		progname, (int)strlen(progname), "", (int)strlen(progname), "",
+		(int)strlen(progname), "");
 
 	exit(code);
+}
+
+/*
+ * XXX This parser is known to have the following issues:
+ * 1.  It accepts null key=value tokens ",,".
+ * 2.  It accepts whitespace after = and before value.
+ * 3.  Values out of range of INT are silently wrapped.
+ * 4.  It doesn't check non-final values.
+ * 5.  The apparently bogus limits of UINT16_MAX are for future expansion.
+ *
+ * The acceptance of a null specification ('-c ""') is by design to match the
+ * manual page syntax specification, this results in a topology of 1 vCPU.
+ */
+static int
+topology_parse(const char *opt)
+{
+	uint64_t ncpus;
+	int c, chk, n, s, t, tmp;
+	char *cp, *str;
+	bool ns, scts;
+
+	c = 1, n = 1, s = 1, t = 1;
+	ns = false, scts = false;
+	str = strdup(opt);
+	if (str == NULL)
+		goto out;
+
+	while ((cp = strsep(&str, ",")) != NULL) {
+		if (sscanf(cp, "%i%n", &tmp, &chk) == 1) {
+			n = tmp;
+			ns = true;
+		} else if (sscanf(cp, "cpus=%i%n", &tmp, &chk) == 1) {
+			n = tmp;
+			ns = true;
+		} else if (sscanf(cp, "sockets=%i%n", &tmp, &chk) == 1) {
+			s = tmp;
+			scts = true;
+		} else if (sscanf(cp, "cores=%i%n", &tmp, &chk) == 1) {
+			c = tmp;
+			scts = true;
+		} else if (sscanf(cp, "threads=%i%n", &tmp, &chk) == 1) {
+			t = tmp;
+			scts = true;
+#ifdef notyet  /* Do not expose this until vmm.ko implements it */
+		} else if (sscanf(cp, "maxcpus=%i%n", &tmp, &chk) == 1) {
+			m = tmp;
+#endif
+		/* Skip the empty argument case from -c "" */
+		} else if (cp[0] == '\0')
+			continue;
+		else
+			goto out;
+		/* Any trailing garbage causes an error */
+		if (cp[chk] != '\0')
+			goto out;
+	}
+	free(str);
+	str = NULL;
+
+	/*
+	 * Range check 1 <= n <= UINT16_MAX all values
+	 */
+	if (n < 1 || s < 1 || c < 1 || t < 1 ||
+	    n > UINT16_MAX || s > UINT16_MAX || c > UINT16_MAX  ||
+	    t > UINT16_MAX)
+		return (-1);
+
+	/* If only the cpus was specified, use that as sockets */
+	if (!scts)
+		s = n;
+	/*
+	 * Compute sockets * cores * threads avoiding overflow
+	 * The range check above insures these are 16 bit values
+	 * If n was specified check it against computed ncpus
+	 */
+	ncpus = (uint64_t)s * c * t;
+	if (ncpus > UINT16_MAX || (ns && n != ncpus))
+		return (-1);
+
+	guest_ncpus = ncpus;
+	sockets = s;
+	cores = c;
+	threads = t;
+	return(0);
+
+out:
+	free(str);
+	return (-1);
 }
 
 static int
@@ -240,6 +347,8 @@ fbsdrun_start_thread(void *param)
 
 	snprintf(tname, sizeof(tname), "vcpu %d", vcpu);
 	pthread_set_name_np(mtp->mt_thr, tname);
+
+	gdb_cpu_add(vcpu);
 
 	vm_loop(mtp->mt_ctx, vcpu, vmexit[vcpu].rip);
 
@@ -504,6 +613,8 @@ vmexit_mtrap(struct vmctx *ctx, struct vm_exit *vmexit, int *pvcpu)
 
 	stats.vmexit_mtrap++;
 
+	gdb_cpu_mtrap(*pvcpu);
+
 	return (VMEXIT_CONTINUE);
 }
 
@@ -578,6 +689,14 @@ vmexit_suspend(struct vmctx *ctx, struct vm_exit *vmexit, int *pvcpu)
 	return (0);	/* NOTREACHED */
 }
 
+static int
+vmexit_debug(struct vmctx *ctx, struct vm_exit *vmexit, int *pvcpu)
+{
+
+	gdb_cpu_suspend(*pvcpu);
+	return (VMEXIT_CONTINUE);
+}
+
 static vmexit_handler_t handler[VM_EXITCODE_MAX] = {
 	[VM_EXITCODE_INOUT]  = vmexit_inout,
 	[VM_EXITCODE_INOUT_STR]  = vmexit_inout,
@@ -592,6 +711,7 @@ static vmexit_handler_t handler[VM_EXITCODE_MAX] = {
 	[VM_EXITCODE_SPINUP_AP] = vmexit_spinup_ap,
 	[VM_EXITCODE_SUSPENDED] = vmexit_suspend,
 	[VM_EXITCODE_TASK_SWITCH] = vmexit_task_switch,
+	[VM_EXITCODE_DEBUG] = vmexit_debug,
 };
 
 static void
@@ -706,6 +826,11 @@ do_open(const char *vmname)
 	struct vmctx *ctx;
 	int error;
 	bool reinit, romboot;
+#ifndef WITHOUT_CAPSICUM
+	cap_rights_t rights;
+	const cap_ioctl_t *cmds;	
+	size_t ncmds;
+#endif
 
 	reinit = romboot = false;
 
@@ -744,6 +869,21 @@ do_open(const char *vmname)
 		exit(1);
 	}
 
+#ifndef WITHOUT_CAPSICUM
+	cap_rights_init(&rights, CAP_IOCTL, CAP_MMAP_RW);
+	if (cap_rights_limit(vm_get_device_fd(ctx), &rights) == -1 &&
+	    errno != ENOSYS)
+		errx(EX_OSERR, "Unable to apply rights for sandbox");
+	vm_get_ioctls(&ncmds);
+	cmds = vm_get_ioctls(NULL);
+	if (cmds == NULL)
+		errx(EX_OSERR, "out of memory");
+	if (cap_ioctls_limit(vm_get_device_fd(ctx), cmds, ncmds) == -1 &&
+	    errno != ENOSYS)
+		errx(EX_OSERR, "Unable to apply rights for sandbox");
+	free((cap_ioctl_t *)cmds);
+#endif
+ 
 	if (reinit) {
 		error = vm_reinit(ctx);
 		if (error) {
@@ -751,15 +891,19 @@ do_open(const char *vmname)
 			exit(1);
 		}
 	}
+	error = vm_set_topology(ctx, sockets, cores, threads, maxcpus);
+	if (error)
+		errx(EX_OSERR, "vm_set_topology");
 	return (ctx);
 }
 
 int
 main(int argc, char *argv[])
 {
-	int c, error, gdb_port, err, bvmcons;
+	int c, error, dbg_port, gdb_port, err, bvmcons;
 	int max_vcpus, mptgen, memflags;
 	int rtc_localtime;
+	bool gdb_stop;
 	struct vmctx *ctx;
 	uint64_t rip;
 	size_t memsize;
@@ -767,14 +911,18 @@ main(int argc, char *argv[])
 
 	bvmcons = 0;
 	progname = basename(argv[0]);
+	dbg_port = 0;
 	gdb_port = 0;
+	gdb_stop = false;
 	guest_ncpus = 1;
+	sockets = cores = threads = 1;
+	maxcpus = 0;
 	memsize = 256 * MB;
 	mptgen = 1;
 	rtc_localtime = 1;
 	memflags = 0;
 
-	optstr = "abehuwxACHIPSWYp:g:c:s:m:l:U:";
+	optstr = "abehuwxACHIPSWYp:g:G:c:s:m:l:U:";
 	while ((c = getopt(argc, argv, optstr)) != -1) {
 		switch (c) {
 		case 'a':
@@ -793,12 +941,22 @@ main(int argc, char *argv[])
                         }
 			break;
                 case 'c':
-			guest_ncpus = atoi(optarg);
+			if (topology_parse(optarg) != 0) {
+			    errx(EX_USAGE, "invalid cpu topology "
+				"'%s'", optarg);
+			}
 			break;
 		case 'C':
 			memflags |= VM_MEM_F_INCORE;
 			break;
 		case 'g':
+			dbg_port = atoi(optarg);
+			break;
+		case 'G':
+			if (optarg[0] == 'w') {
+				gdb_stop = true;
+				optarg++;
+			}
 			gdb_port = atoi(optarg);
 			break;
 		case 'l':
@@ -871,11 +1029,6 @@ main(int argc, char *argv[])
 	vmname = argv[0];
 	ctx = do_open(vmname);
 
-	if (guest_ncpus < 1) {
-		fprintf(stderr, "Invalid guest vCPUs (%d)\n", guest_ncpus);
-		exit(1);
-	}
-
 	max_vcpus = num_vcpus_allowed(ctx);
 	if (guest_ncpus > max_vcpus) {
 		fprintf(stderr, "%d vCPUs requested but only %d available\n",
@@ -913,8 +1066,11 @@ main(int argc, char *argv[])
 	if (init_pci(ctx) != 0)
 		exit(1);
 
+	if (dbg_port != 0)
+		init_dbgport(dbg_port);
+
 	if (gdb_port != 0)
-		init_dbgport(gdb_port);
+		init_gdb(ctx, gdb_port, gdb_stop);
 
 	if (bvmcons)
 		init_bvmcons();
@@ -951,6 +1107,16 @@ main(int argc, char *argv[])
 
 	if (lpc_bootrom())
 		fwctl_init();
+
+#ifndef WITHOUT_CAPSICUM
+	caph_cache_catpages();
+
+	if (caph_limit_stdout() == -1 || caph_limit_stderr() == -1)
+		errx(EX_OSERR, "Unable to apply rights for sandbox");
+
+	if (cap_enter() == -1 && errno != ENOSYS)
+		errx(EX_OSERR, "cap_enter() failed");
+#endif
 
 	/*
 	 * Change the proc title to include the VM name.

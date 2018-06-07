@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1980, 1986, 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -59,7 +61,6 @@
 #include <net/route.h>
 #include <net/route_var.h>
 #include <net/vnet.h>
-#include <net/flowtable.h>
 
 #ifdef RADIX_MPATH
 #include <net/radix_mpath.h>
@@ -227,7 +228,7 @@ route_init(void)
 	if (rt_numfibs == 0)
 		rt_numfibs = 1;
 }
-SYSINIT(route_init, SI_SUB_PROTO_DOMAIN, SI_ORDER_THIRD, route_init, 0);
+SYSINIT(route_init, SI_SUB_PROTO_DOMAIN, SI_ORDER_THIRD, route_init, NULL);
 
 static int
 rtentry_zinit(void *mem, int size, int how)
@@ -454,18 +455,23 @@ rtalloc1_fib(struct sockaddr *dst, int report, u_long ignflags,
 	/*
 	 * Look up the address in the table for that Address Family
 	 */
-	RIB_RLOCK(rh);
+	if ((ignflags & RTF_RNH_LOCKED) == 0)
+		RIB_RLOCK(rh);
+#ifdef INVARIANTS
+	else
+		RIB_LOCK_ASSERT(rh);
+#endif
 	rn = rh->rnh_matchaddr(dst, &rh->head);
 	if (rn && ((rn->rn_flags & RNF_ROOT) == 0)) {
 		newrt = RNTORT(rn);
 		RT_LOCK(newrt);
 		RT_ADDREF(newrt);
-		RIB_RUNLOCK(rh);
+		if ((ignflags & RTF_RNH_LOCKED) == 0)
+			RIB_RUNLOCK(rh);
 		return (newrt);
 
-	} else
+	} else if ((ignflags & RTF_RNH_LOCKED) == 0)
 		RIB_RUNLOCK(rh);
-	
 	/*
 	 * Either we hit the root or could not find any match,
 	 * which basically means: "cannot get there from here".
@@ -588,12 +594,12 @@ rtredirect_fib(struct sockaddr *dst,
 	struct rib_head *rnh;
 
 	ifa = NULL;
+	NET_EPOCH_ENTER();
 	rnh = rt_tables_get_rnh(fibnum, dst->sa_family);
 	if (rnh == NULL) {
 		error = EAFNOSUPPORT;
 		goto out;
 	}
-
 	/* verify the gateway is directly reachable */
 	if ((ifa = ifa_ifwithnet(gateway, 0, fibnum)) == NULL) {
 		error = ENETUNREACH;
@@ -647,6 +653,7 @@ rtredirect_fib(struct sockaddr *dst,
 			info.rti_info[RTAX_DST] = dst;
 			info.rti_info[RTAX_GATEWAY] = gateway;
 			info.rti_info[RTAX_NETMASK] = netmask;
+			ifa_ref(ifa);
 			info.rti_ifa = ifa;
 			info.rti_flags = flags;
 			error = rtrequest1_fib(RTM_ADD, &info, &rt, fibnum);
@@ -681,7 +688,8 @@ rtredirect_fib(struct sockaddr *dst,
 done:
 	if (rt)
 		RTFREE_LOCKED(rt);
-out:
+ out:
+	NET_EPOCH_EXIT();
 	if (error)
 		V_rtstat.rts_badredirect++;
 	else if (stat != NULL)
@@ -692,8 +700,6 @@ out:
 	info.rti_info[RTAX_NETMASK] = netmask;
 	info.rti_info[RTAX_AUTHOR] = src;
 	rt_missmsg_fib(RTM_REDIRECT, &info, flags, error, fibnum);
-	if (ifa != NULL)
-		ifa_free(ifa);
 }
 
 /*
@@ -724,6 +730,7 @@ ifa_ifwithroute(int flags, const struct sockaddr *dst, struct sockaddr *gateway,
 	struct ifaddr *ifa;
 	int not_found = 0;
 
+	MPASS(in_epoch());
 	if ((flags & RTF_GATEWAY) == 0) {
 		/*
 		 * If we are adding a route to an interface,
@@ -748,9 +755,11 @@ ifa_ifwithroute(int flags, const struct sockaddr *dst, struct sockaddr *gateway,
 	if (ifa == NULL)
 		ifa = ifa_ifwithnet(gateway, 0, fibnum);
 	if (ifa == NULL) {
-		struct rtentry *rt = rtalloc1_fib(gateway, 0, 0, fibnum);
+		struct rtentry *rt;
+
+		rt = rtalloc1_fib(gateway, 0, flags, fibnum);
 		if (rt == NULL)
-			return (NULL);
+			goto out;
 		/*
 		 * dismiss a gateway that is reachable only
 		 * through the default router
@@ -769,21 +778,19 @@ ifa_ifwithroute(int flags, const struct sockaddr *dst, struct sockaddr *gateway,
 		}
 		if (!not_found && rt->rt_ifa != NULL) {
 			ifa = rt->rt_ifa;
-			ifa_ref(ifa);
 		}
 		RT_REMREF(rt);
 		RT_UNLOCK(rt);
 		if (not_found || ifa == NULL)
-			return (NULL);
+			goto out;
 	}
 	if (ifa->ifa_addr->sa_family != dst->sa_family) {
 		struct ifaddr *oifa = ifa;
 		ifa = ifaof_ifpforaddr(dst, ifa->ifa_ifp);
 		if (ifa == NULL)
 			ifa = oifa;
-		else
-			ifa_free(oifa);
 	}
+ out:
 	return (ifa);
 }
 
@@ -893,7 +900,7 @@ rt_exportinfo(struct rtentry *rt, struct rt_addrinfo *info, int flags)
 	info->rti_flags = rt->rt_flags;
 	info->rti_ifp = rt->rt_ifp;
 	info->rti_ifa = rt->rt_ifa;
-
+	ifa_ref(info->rti_ifa);
 	if (flags & NHR_REF) {
 		/* Do 'traditional' refcouting */
 		if_ref(info->rti_ifp);
@@ -1269,17 +1276,19 @@ int
 rt_getifa_fib(struct rt_addrinfo *info, u_int fibnum)
 {
 	struct ifaddr *ifa;
-	int error = 0;
+	int needref, error;
 
 	/*
 	 * ifp may be specified by sockaddr_dl
 	 * when protocol address is ambiguous.
 	 */
+	error = 0;
+	needref = (info->rti_ifa == NULL);
+	NET_EPOCH_ENTER();
 	if (info->rti_ifp == NULL && ifpaddr != NULL &&
 	    ifpaddr->sa_family == AF_LINK &&
 	    (ifa = ifa_ifwithnet(ifpaddr, 0, fibnum)) != NULL) {
 		info->rti_ifp = ifa->ifa_ifp;
-		ifa_free(ifa);
 	}
 	if (info->rti_ifa == NULL && ifaaddr != NULL)
 		info->rti_ifa = ifa_ifwithaddr(ifaaddr);
@@ -1297,11 +1306,13 @@ rt_getifa_fib(struct rt_addrinfo *info, u_int fibnum)
 			info->rti_ifa = ifa_ifwithroute(flags, sa, sa,
 							fibnum);
 	}
-	if ((ifa = info->rti_ifa) != NULL) {
+	if (needref && info->rti_ifa != NULL) {
 		if (info->rti_ifp == NULL)
-			info->rti_ifp = ifa->ifa_ifp;
+			info->rti_ifp = info->rti_ifa->ifa_ifp;
+		ifa_ref(info->rti_ifa);
 	} else
 		error = ENETUNREACH;
+	NET_EPOCH_EXIT();
 	return (error);
 }
 
@@ -1497,79 +1508,12 @@ rt_mpath_unlink(struct rib_head *rnh, struct rt_addrinfo *info,
 }
 #endif
 
-#ifdef FLOWTABLE
-static struct rtentry *
-rt_flowtable_check_route(struct rib_head *rnh, struct rt_addrinfo *info)
-{
-#if defined(INET6) || defined(INET)
-	struct radix_node *rn;
-#endif
-	struct rtentry *rt0;
-
-	rt0 = NULL;
-	/* "flow-table" only supports IPv6 and IPv4 at the moment. */
-	switch (dst->sa_family) {
-#ifdef INET6
-	case AF_INET6:
-#endif
-#ifdef INET
-	case AF_INET:
-#endif
-#if defined(INET6) || defined(INET)
-		rn = rnh->rnh_matchaddr(dst, &rnh->head);
-		if (rn && ((rn->rn_flags & RNF_ROOT) == 0)) {
-			struct sockaddr *mask;
-			u_char *m, *n;
-			int len;
-
-			/*
-			 * compare mask to see if the new route is
-			 * more specific than the existing one
-			 */
-			rt0 = RNTORT(rn);
-			RT_LOCK(rt0);
-			RT_ADDREF(rt0);
-			RT_UNLOCK(rt0);
-			/*
-			 * A host route is already present, so
-			 * leave the flow-table entries as is.
-			 */
-			if (rt0->rt_flags & RTF_HOST) {
-				RTFREE(rt0);
-				rt0 = NULL;
-			} else if (!(flags & RTF_HOST) && netmask) {
-				mask = rt_mask(rt0);
-				len = mask->sa_len;
-				m = (u_char *)mask;
-				n = (u_char *)netmask;
-				while (len-- > 0) {
-					if (*n != *m)
-						break;
-					n++;
-					m++;
-				}
-				if (len == 0 || (*n < *m)) {
-					RTFREE(rt0);
-					rt0 = NULL;
-				}
-			}
-		}
-#endif/* INET6 || INET */
-	}
-
-	return (rt0);
-}
-#endif
-
 int
 rtrequest1_fib(int req, struct rt_addrinfo *info, struct rtentry **ret_nrt,
 				u_int fibnum)
 {
 	int error = 0;
 	struct rtentry *rt, *rt_old;
-#ifdef FLOWTABLE
-	struct rtentry *rt0;
-#endif
 	struct radix_node *rn;
 	struct rib_head *rnh;
 	struct ifaddr *ifa;
@@ -1645,12 +1589,9 @@ rtrequest1_fib(int req, struct rt_addrinfo *info, struct rtentry **ret_nrt,
 			error = rt_getifa_fib(info, fibnum);
 			if (error)
 				return (error);
-		} else
-			ifa_ref(info->rti_ifa);
-		ifa = info->rti_ifa;
+		}
 		rt = uma_zalloc(V_rtzone, M_NOWAIT);
 		if (rt == NULL) {
-			ifa_free(ifa);
 			return (ENOBUFS);
 		}
 		rt->rt_flags = RTF_UP | flags;
@@ -1659,7 +1600,6 @@ rtrequest1_fib(int req, struct rt_addrinfo *info, struct rtentry **ret_nrt,
 		 * Add the gateway. Possibly re-malloc-ing the storage for it.
 		 */
 		if ((error = rt_setgate(rt, dst, gateway)) != 0) {
-			ifa_free(ifa);
 			uma_zfree(V_rtzone, rt);
 			return (error);
 		}
@@ -1682,6 +1622,8 @@ rtrequest1_fib(int req, struct rt_addrinfo *info, struct rtentry **ret_nrt,
 		 * This moved from below so that rnh->rnh_addaddr() can
 		 * examine the ifa and  ifa->ifa_ifp if it so desires.
 		 */
+		ifa = info->rti_ifa;
+		ifa_ref(ifa);
 		rt->rt_ifa = ifa;
 		rt->rt_ifp = ifa->ifa_ifp;
 		rt->rt_weight = 1;
@@ -1702,10 +1644,6 @@ rtrequest1_fib(int req, struct rt_addrinfo *info, struct rtentry **ret_nrt,
 			return (EEXIST);
 		}
 #endif
-
-#ifdef FLOWTABLE
-		rt0 = rt_flowtable_check_route(rnh, info);
-#endif /* FLOWTABLE */
 
 		/* XXX mtu manipulation will be done in rnh_addaddr -- itojun */
 		rn = rnh->rnh_addaddr(ndst, netmask, &rnh->head, rt->rt_nodes);
@@ -1741,18 +1679,8 @@ rtrequest1_fib(int req, struct rt_addrinfo *info, struct rtentry **ret_nrt,
 			ifa_free(rt->rt_ifa);
 			R_Free(rt_key(rt));
 			uma_zfree(V_rtzone, rt);
-#ifdef FLOWTABLE
-			if (rt0 != NULL)
-				RTFREE(rt0);
-#endif
 			return (EEXIST);
 		} 
-#ifdef FLOWTABLE
-		else if (rt0 != NULL) {
-			flowtable_route_flush(dst->sa_family, rt0);
-			RTFREE(rt0);
-		}
-#endif
 
 		if (rt_old != NULL) {
 			rt_notifydelete(rt_old, info);
@@ -1806,6 +1734,8 @@ rtrequest1_fib_change(struct rib_head *rnh, struct rt_addrinfo *info,
 	int family, mtu;
 	struct if_mtuinfo ifmtu;
 
+	RIB_WLOCK_ASSERT(rnh);
+
 	rt = (struct rtentry *)rnh->rnh_lookup(info->rti_info[RTAX_DST],
 	    info->rti_info[RTAX_NETMASK], &rnh->head);
 
@@ -1838,8 +1768,13 @@ rtrequest1_fib_change(struct rib_head *rnh, struct rt_addrinfo *info,
 	    info->rti_info[RTAX_IFP] != NULL ||
 	    (info->rti_info[RTAX_IFA] != NULL &&
 	     !sa_equal(info->rti_info[RTAX_IFA], rt->rt_ifa->ifa_addr))) {
-
+		/*
+		 * XXX: Temporarily set RTF_RNH_LOCKED flag in the rti_flags
+		 *	to avoid rlock in the ifa_ifwithroute().
+		 */
+		info->rti_flags |= RTF_RNH_LOCKED;
 		error = rt_getifa_fib(info, fibnum);
+		info->rti_flags &= ~RTF_RNH_LOCKED;
 		if (info->rti_ifa != NULL)
 			free_ifa = 1;
 
@@ -1849,9 +1784,11 @@ rtrequest1_fib_change(struct rib_head *rnh, struct rt_addrinfo *info,
 
 	/* Check if outgoing interface has changed */
 	if (info->rti_ifa != NULL && info->rti_ifa != rt->rt_ifa &&
-	    rt->rt_ifa != NULL && rt->rt_ifa->ifa_rtrequest != NULL) {
-		rt->rt_ifa->ifa_rtrequest(RTM_DELETE, rt, info);
+	    rt->rt_ifa != NULL) {
+		if (rt->rt_ifa->ifa_rtrequest != NULL)
+			rt->rt_ifa->ifa_rtrequest(RTM_DELETE, rt, info);
 		ifa_free(rt->rt_ifa);
+		rt->rt_ifa = NULL;
 	}
 	/* Update gateway address */
 	if (info->rti_info[RTAX_GATEWAY] != NULL) {
@@ -1890,14 +1827,23 @@ rtrequest1_fib_change(struct rib_head *rnh, struct rt_addrinfo *info,
 		}
 	}
 
+	/*
+	 * This route change may have modified the route's gateway.  In that
+	 * case, any inpcbs that have cached this route need to invalidate their
+	 * llentry cache.
+	 */
+	rnh->rnh_gen++;
+
 	if (ret_nrt) {
 		*ret_nrt = rt;
 		RT_ADDREF(rt);
 	}
 bad:
 	RT_UNLOCK(rt);
-	if (free_ifa != 0)
+	if (free_ifa != 0) {
 		ifa_free(info->rti_ifa);
+		info->rti_ifa = NULL;
+	}
 	return (error);
 }
 
@@ -2112,6 +2058,7 @@ rtinit1(struct ifaddr *ifa, int cmd, int flags, int fibnum)
 		 * Do the actual request
 		 */
 		bzero((caddr_t)&info, sizeof(info));
+		ifa_ref(ifa);
 		info.rti_ifa = ifa;
 		info.rti_flags = flags |
 		    (ifa->ifa_flags & ~IFA_RTSELF) | RTF_PINNED;

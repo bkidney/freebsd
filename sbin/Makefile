@@ -6,13 +6,13 @@
 # XXX MISSING:		icheck ncheck
 
 SUBDIR=adjkerntz \
-	badsect \
 	camcontrol \
 	clri \
 	comcontrol \
 	conscontrol \
 	ddb \
 	devfs \
+	devmatch \
 	dhclient \
 	dmesg \
 	dump \
@@ -70,7 +70,6 @@ SUBDIR=adjkerntz \
 	tunefs \
 	umount
 
-SUBDIR.${MK_ATM}+=	atm
 SUBDIR.${MK_CCD}+=	ccdconfig
 SUBDIR.${MK_CXX}+=	devd
 SUBDIR.${MK_HAST}+=	hastctl
@@ -93,8 +92,6 @@ SUBDIR.${MK_ZFS}+=	zfsbootcfg
 SUBDIR.${MK_TESTS}+=	tests
 
 .include <bsd.arch.inc.mk>
-
-SUBDIR:=	${SUBDIR:O}
 
 SUBDIR_PARALLEL=
 

@@ -15,15 +15,14 @@
 #define LLVM_CLANG_LIB_CODEGEN_CODEGENTYPES_H
 
 #include "CGCall.h"
-#include "clang/AST/GlobalDecl.h"
+#include "clang/Basic/ABI.h"
 #include "clang/CodeGen/CGFunctionInfo.h"
+#include "clang/Sema/Sema.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/IR/Module.h"
-#include <vector>
 
 namespace llvm {
 class FunctionType;
-class Module;
 class DataLayout;
 class Type;
 class LLVMContext;
@@ -48,6 +47,7 @@ class TagDecl;
 class TargetInfo;
 class Type;
 typedef CanQual<Type> CanQualType;
+class GlobalDecl;
 
 namespace CodeGen {
 class ABIInfo;
@@ -164,8 +164,6 @@ class CodeGenTypes {
 
   llvm::SmallSet<const Type *, 8> RecordsWithOpaqueMemberPointers;
 
-  unsigned ClangCallConvToLLVMCallConv(CallingConv CC);
-
 public:
   CodeGenTypes(CodeGenModule &cgm);
   ~CodeGenTypes();
@@ -178,6 +176,10 @@ public:
   const TargetInfo &getTarget() const { return Target; }
   CGCXXABI &getCXXABI() const { return TheCXXABI; }
   llvm::LLVMContext &getLLVMContext() { return TheModule.getContext(); }
+  const CodeGenOptions &getCodeGenOpts() const;
+
+  /// Convert clang calling convention to LLVM callilng convention.
+  unsigned ClangCallConvToLLVMCallConv(CallingConv CC);
 
   /// ConvertType - Convert type T into a llvm::Type.
   llvm::Type *ConvertType(QualType T);
@@ -303,11 +305,14 @@ public:
   const CGFunctionInfo &arrangeCXXConstructorCall(const CallArgList &Args,
                                                   const CXXConstructorDecl *D,
                                                   CXXCtorType CtorKind,
-                                                  unsigned ExtraArgs);
+                                                  unsigned ExtraPrefixArgs,
+                                                  unsigned ExtraSuffixArgs,
+                                                  bool PassProtoArgs = true);
 
   const CGFunctionInfo &arrangeCXXMethodCall(const CallArgList &args,
                                              const FunctionProtoType *type,
-                                             RequiredArgs required);
+                                             RequiredArgs required,
+                                             unsigned numPrefixArgs);
   const CGFunctionInfo &arrangeMSMemberPointerThunk(const CXXMethodDecl *MD);
   const CGFunctionInfo &arrangeMSCtorClosure(const CXXConstructorDecl *CD,
                                                  CXXCtorType CT);
@@ -351,6 +356,10 @@ public:  // These are internal details of CGT that shouldn't be used externally.
   /// IsZeroInitializable - Return whether a type can be
   /// zero-initialized (in the C++ sense) with an LLVM zeroinitializer.
   bool isZeroInitializable(QualType T);
+
+  /// Check if the pointer type can be zero-initialized (in the C++ sense)
+  /// with an LLVM zeroinitializer.
+  bool isPointerZeroInitializable(QualType T);
 
   /// IsZeroInitializable - Return whether a record type can be
   /// zero-initialized (in the C++ sense) with an LLVM zeroinitializer.

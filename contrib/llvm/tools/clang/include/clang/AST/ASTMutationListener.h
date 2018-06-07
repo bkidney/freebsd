@@ -22,6 +22,8 @@ namespace clang {
   class CXXRecordDecl;
   class Decl;
   class DeclContext;
+  class Expr;
+  class FieldDecl;
   class FunctionDecl;
   class FunctionTemplateDecl;
   class Module;
@@ -34,6 +36,7 @@ namespace clang {
   class QualType;
   class RecordDecl;
   class TagDecl;
+  class ValueDecl;
   class VarDecl;
   class VarTemplateDecl;
   class VarTemplateSpecializationDecl;
@@ -79,19 +82,28 @@ public:
 
   /// \brief A virtual destructor's operator delete has been resolved.
   virtual void ResolvedOperatorDelete(const CXXDestructorDecl *DD,
-                                      const FunctionDecl *Delete) {}
+                                      const FunctionDecl *Delete,
+                                      Expr *ThisArg) {}
 
   /// \brief An implicit member got a definition.
   virtual void CompletedImplicitDefinition(const FunctionDecl *D) {}
 
-  /// \brief A static data member was implicitly instantiated.
-  virtual void StaticDataMemberInstantiated(const VarDecl *D) {}
+  /// \brief The instantiation of a templated function or variable was
+  /// requested. In particular, the point of instantiation and template
+  /// specialization kind of \p D may have changed.
+  virtual void InstantiationRequested(const ValueDecl *D) {}
+
+  /// \brief A templated variable's definition was implicitly instantiated.
+  virtual void VariableDefinitionInstantiated(const VarDecl *D) {}
 
   /// \brief A function template's definition was instantiated.
   virtual void FunctionDefinitionInstantiated(const FunctionDecl *D) {}
 
   /// \brief A default argument was instantiated.
   virtual void DefaultArgumentInstantiated(const ParmVarDecl *D) {}
+
+  /// \brief A default member initializer was instantiated.
+  virtual void DefaultMemberInitializerInstantiated(const FieldDecl *D) {}
 
   /// \brief A new objc category class was added for an interface.
   virtual void AddedObjCCategoryToInterface(const ObjCCategoryDecl *CatD,

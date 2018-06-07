@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1988, 1993
  *	The Regents of the University of California.
  * All rights reserved.
@@ -11,7 +13,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -73,9 +75,7 @@ __FBSDID("$FreeBSD$");
 #include <netinet/ip_mroute.h>
 #include <netinet/ip_icmp.h>
 
-#ifdef IPSEC
-#include <netipsec/ipsec.h>
-#endif /*IPSEC*/
+#include <netipsec/ipsec_support.h>
 
 #include <machine/stdarg.h>
 #include <security/mac/mac_framework.h>
@@ -212,7 +212,7 @@ rip_init(void)
 {
 
 	in_pcbinfo_init(&V_ripcbinfo, "rip", &V_ripcb, INP_PCBHASH_RAW_SIZE,
-	    1, "ripcb", rip_inpcb_init, NULL, 0, IPI_HASHFIELDS_NONE);
+	    1, "ripcb", rip_inpcb_init, IPI_HASHFIELDS_NONE);
 	EVENTHANDLER_REGISTER(maxsockets_change, rip_zone_change, NULL,
 	    EVENTHANDLER_PRI_ANY);
 }
@@ -236,10 +236,11 @@ rip_append(struct inpcb *last, struct ip *ip, struct mbuf *n,
 
 	INP_LOCK_ASSERT(last);
 
-#ifdef IPSEC
+#if defined(IPSEC) || defined(IPSEC_SUPPORT)
 	/* check AH/ESP integrity. */
-	if (ipsec4_in_reject(n, last)) {
-		policyfail = 1;
+	if (IPSEC_ENABLED(ipv4)) {
+		if (IPSEC_CHECK_POLICY(ipv4, n, last) != 0)
+			policyfail = 1;
 	}
 #endif /* IPSEC */
 #ifdef MAC
@@ -508,7 +509,7 @@ rip_output(struct mbuf *m, struct socket *so, ...)
 		 * and don't allow packet length sizes that will crash.
 		 */
 		if (((ip->ip_hl != (sizeof (*ip) >> 2)) && inp->inp_options)
-		    || (ntohs(ip->ip_len) > m->m_pkthdr.len)
+		    || (ntohs(ip->ip_len) != m->m_pkthdr.len)
 		    || (ntohs(ip->ip_len) < (ip->ip_hl << 2))) {
 			INP_RUNLOCK(inp);
 			m_freem(m);
@@ -742,7 +743,7 @@ rip_ctlinput(int cmd, struct sockaddr *sa, void *vip)
 	switch (cmd) {
 	case PRC_IFDOWN:
 		IN_IFADDR_RLOCK(&in_ifa_tracker);
-		TAILQ_FOREACH(ia, &V_in_ifaddrhead, ia_link) {
+		CK_STAILQ_FOREACH(ia, &V_in_ifaddrhead, ia_link) {
 			if (ia->ia_ifa.ifa_addr == sa
 			    && (ia->ia_flags & IFA_ROUTE)) {
 				ifa_ref(&ia->ia_ifa);
@@ -768,7 +769,7 @@ rip_ctlinput(int cmd, struct sockaddr *sa, void *vip)
 
 	case PRC_IFUP:
 		IN_IFADDR_RLOCK(&in_ifa_tracker);
-		TAILQ_FOREACH(ia, &V_in_ifaddrhead, ia_link) {
+		CK_STAILQ_FOREACH(ia, &V_in_ifaddrhead, ia_link) {
 			if (ia->ia_ifa.ifa_addr == sa)
 				break;
 		}
@@ -850,6 +851,7 @@ rip_detach(struct socket *so)
 		ip_rsvp_force_done(so);
 	if (so == V_ip_rsvpd)
 		ip_rsvp_done();
+	/* XXX defer to epoch_call */
 	in_pcbdetach(inp);
 	in_pcbfree(inp);
 	INP_INFO_WUNLOCK(&V_ripcbinfo);
@@ -927,7 +929,7 @@ rip_bind(struct socket *so, struct sockaddr *nam, struct thread *td)
 	inp = sotoinpcb(so);
 	KASSERT(inp != NULL, ("rip_bind: inp == NULL"));
 
-	if (TAILQ_EMPTY(&V_ifnet) ||
+	if (CK_STAILQ_EMPTY(&V_ifnet) ||
 	    (addr->sin_family != AF_INET && addr->sin_family != AF_IMPLINK) ||
 	    (addr->sin_addr.s_addr &&
 	     (inp->inp_flags & INP_BINDANY) == 0 &&
@@ -952,7 +954,7 @@ rip_connect(struct socket *so, struct sockaddr *nam, struct thread *td)
 
 	if (nam->sa_len != sizeof(*addr))
 		return (EINVAL);
-	if (TAILQ_EMPTY(&V_ifnet))
+	if (CK_STAILQ_EMPTY(&V_ifnet))
 		return (EADDRNOTAVAIL);
 	if (addr->sin_family != AF_INET && addr->sin_family != AF_IMPLINK)
 		return (EAFNOSUPPORT);
@@ -1019,6 +1021,7 @@ static int
 rip_pcblist(SYSCTL_HANDLER_ARGS)
 {
 	int error, i, n;
+	struct in_pcblist *il;
 	struct inpcb *inp, **inp_list;
 	inp_gen_t gencnt;
 	struct xinpgen xig;
@@ -1053,9 +1056,8 @@ rip_pcblist(SYSCTL_HANDLER_ARGS)
 	if (error)
 		return (error);
 
-	inp_list = malloc(n * sizeof *inp_list, M_TEMP, M_WAITOK);
-	if (inp_list == NULL)
-		return (ENOMEM);
+	il = malloc(sizeof(struct in_pcblist) + n * sizeof(struct inpcb *), M_TEMP, M_WAITOK|M_ZERO_INVARIANTS);
+	inp_list = il->il_inp_list;
 
 	INP_INFO_RLOCK(&V_ripcbinfo);
 	for (inp = LIST_FIRST(V_ripcbinfo.ipi_listhead), i = 0; inp && i < n;
@@ -1078,25 +1080,15 @@ rip_pcblist(SYSCTL_HANDLER_ARGS)
 		if (inp->inp_gencnt <= gencnt) {
 			struct xinpcb xi;
 
-			bzero(&xi, sizeof(xi));
-			xi.xi_len = sizeof xi;
-			/* XXX should avoid extra copy */
-			bcopy(inp, &xi.xi_inp, sizeof *inp);
-			if (inp->inp_socket)
-				sotoxsocket(inp->inp_socket, &xi.xi_socket);
+			in_pcbtoxinpcb(inp, &xi);
 			INP_RUNLOCK(inp);
 			error = SYSCTL_OUT(req, &xi, sizeof xi);
 		} else
 			INP_RUNLOCK(inp);
 	}
-	INP_INFO_WLOCK(&V_ripcbinfo);
-	for (i = 0; i < n; i++) {
-		inp = inp_list[i];
-		INP_RLOCK(inp);
-		if (!in_pcbrele_rlocked(inp))
-			INP_RUNLOCK(inp);
-	}
-	INP_INFO_WUNLOCK(&V_ripcbinfo);
+	il->il_count = n;
+	il->il_pcbinfo = &V_ripcbinfo;
+	epoch_call(net_epoch_preempt, &il->il_epoch_ctx, in_pcblist_rele_rlocked);
 
 	if (!error) {
 		/*
@@ -1112,7 +1104,6 @@ rip_pcblist(SYSCTL_HANDLER_ARGS)
 		INP_INFO_RUNLOCK(&V_ripcbinfo);
 		error = SYSCTL_OUT(req, &xig, sizeof xig);
 	}
-	free(inp_list, M_TEMP);
 	return (error);
 }
 

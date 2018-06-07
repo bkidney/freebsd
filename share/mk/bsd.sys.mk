@@ -6,16 +6,16 @@
 # Enable various levels of compiler warning checks.  These may be
 # overridden (e.g. if using a non-gcc compiler) by defining MK_WARNS=no.
 
-# for GCC:   http://gcc.gnu.org/onlinedocs/gcc-4.2.1/gcc/Warning-Options.html
+# for 4.2.1 GCC:   http://gcc.gnu.org/onlinedocs/gcc-4.2.1/gcc/Warning-Options.html
+# for current GCC: https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html
+# for clang: https://clang.llvm.org/docs/DiagnosticsReference.html
 
 .include <bsd.compiler.mk>
 
 # the default is gnu99 for now
 CSTD?=		gnu99
 
-.if ${CSTD} == "k&r"
-CFLAGS+=	-traditional
-.elif ${CSTD} == "c89" || ${CSTD} == "c90"
+.if ${CSTD} == "c89" || ${CSTD} == "c90"
 CFLAGS+=	-std=iso9899:1990
 .elif ${CSTD} == "c94" || ${CSTD} == "c95"
 CFLAGS+=	-std=iso9899:199409
@@ -47,7 +47,6 @@ CWARNFLAGS+=	-Wreturn-type -Wcast-qual -Wwrite-strings -Wswitch -Wshadow\
 CWARNFLAGS+=	-Wcast-align
 .endif # !NO_WCAST_ALIGN !NO_WCAST_ALIGN.${COMPILER_TYPE}
 .endif # WARNS >= 4
-# BDECFLAGS
 .if ${WARNS} >= 6
 CWARNFLAGS+=	-Wchar-subscripts -Winline -Wnested-externs -Wredundant-decls\
 		-Wold-style-definition
@@ -69,7 +68,7 @@ CWARNFLAGS+=	-Wno-pointer-sign
 .if ${WARNS} <= 6
 CWARNFLAGS.clang+=	-Wno-empty-body -Wno-string-plus-int
 .if ${COMPILER_TYPE} == "clang" && ${COMPILER_VERSION} >= 30400
-CWARNFLAGS.clang+= -Wno-unused-const-variable
+CWARNFLAGS.clang+=	-Wno-unused-const-variable
 .endif
 .endif # WARNS <= 6
 .if ${WARNS} <= 3
@@ -77,6 +76,9 @@ CWARNFLAGS.clang+=	-Wno-tautological-compare -Wno-unused-value\
 		-Wno-parentheses-equality -Wno-unused-function -Wno-enum-conversion
 .if ${COMPILER_TYPE} == "clang" && ${COMPILER_VERSION} >= 30600
 CWARNFLAGS.clang+=	-Wno-unused-local-typedef
+.endif
+.if ${COMPILER_TYPE} == "clang" && ${COMPILER_VERSION} >= 40000
+CWARNFLAGS.clang+=	-Wno-address-of-packed-member
 .endif
 .endif # WARNS <= 3
 .if ${WARNS} <= 2
@@ -128,11 +130,6 @@ CWARNFLAGS+=	-Wno-error=address			\
 		-Wno-error=unused-value
 .endif
 
-# GCC 5.3.0
-.if ${COMPILER_TYPE} == "gcc" && ${COMPILER_VERSION} >= 50300
-CWARNFLAGS+=	-Wno-error=strict-overflow
-.endif
-
 # GCC 6.1.0
 .if ${COMPILER_TYPE} == "gcc" && ${COMPILER_VERSION} >= 60100
 CWARNFLAGS+=	-Wno-error=misleading-indentation	\
@@ -140,6 +137,21 @@ CWARNFLAGS+=	-Wno-error=misleading-indentation	\
 		-Wno-error=shift-negative-value		\
 		-Wno-error=tautological-compare		\
 		-Wno-error=unused-const-variable
+.endif
+
+# GCC 7.1.0
+.if ${COMPILER_TYPE} == "gcc" && ${COMPILER_VERSION} >= 70100
+CWARNFLAGS+=	-Wno-error=bool-operation		\
+		-Wno-error=deprecated			\
+		-Wno-error=expansion-to-defined		\
+		-Wno-error=format-overflow		\
+		-Wno-error=format-truncation		\
+		-Wno-error=implicit-fallthrough		\
+		-Wno-error=int-in-bool-context		\
+		-Wno-error=memset-elt-size		\
+		-Wno-error=nonnull			\
+		-Wno-error=pointer-compare		\
+		-Wno-error=stringop-overflow
 .endif
 
 # How to handle FreeBSD custom printf format specifiers.
@@ -192,6 +204,10 @@ SSP_CFLAGS?=	-fstack-protector
 CFLAGS+=	${SSP_CFLAGS}
 .endif # SSP && !ARM && !MIPS
 
+# Additional flags passed in CFLAGS and CXXFLAGS when MK_DEBUG_FILES is
+# enabled.
+DEBUG_FILES_CFLAGS?= -g
+
 # Allow user-specified additional warning flags, plus compiler and file
 # specific flag overrides, unless we've overriden this...
 .if ${MK_WARNS} != "no"
@@ -206,6 +222,8 @@ AFLAGS+=	${AFLAGS.${.IMPSRC:T}}
 ACFLAGS+=	${ACFLAGS.${.IMPSRC:T}}
 CFLAGS+=	${CFLAGS.${.IMPSRC:T}}
 CXXFLAGS+=	${CXXFLAGS.${.IMPSRC:T}}
+
+LDFLAGS+=	${LDFLAGS.${LINKER_TYPE}}
 
 .if defined(SRCTOP)
 # Prevent rebuilding during install to support read-only objdirs.

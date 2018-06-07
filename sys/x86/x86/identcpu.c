@@ -67,10 +67,6 @@ __FBSDID("$FreeBSD$");
 #include <x86/vmware.h>
 
 #ifdef __i386__
-#if !defined(CPU_DISABLE_SSE) && defined(I686_CPU)
-#define CPU_ENABLE_SSE
-#endif
-
 #define	IDENTBLUE_CYRIX486	0
 #define	IDENTBLUE_IBMCPU	1
 #define	IDENTBLUE_CYRIXM2	2
@@ -95,7 +91,9 @@ u_int	cpu_feature;		/* Feature flags */
 u_int	cpu_feature2;		/* Feature flags */
 u_int	amd_feature;		/* AMD feature flags */
 u_int	amd_feature2;		/* AMD feature flags */
+u_int	amd_rascap;		/* AMD RAS capabilities */
 u_int	amd_pminfo;		/* AMD advanced power management info */
+u_int	amd_extended_feature_extensions;
 u_int	via_feature_rng;	/* VIA RNG features */
 u_int	via_feature_xcrypt;	/* VIA ACE features */
 u_int	cpu_high;		/* Highest arg to CPUID */
@@ -105,13 +103,13 @@ u_int	cpu_procinfo;		/* HyperThreading Info / Brand Index / CLFUSH */
 u_int	cpu_procinfo2;		/* Multicore info */
 char	cpu_vendor[20];		/* CPU Origin code */
 u_int	cpu_vendor_id;		/* CPU vendor ID */
-#if defined(__amd64__) || defined(CPU_ENABLE_SSE)
 u_int	cpu_fxsr;		/* SSE enabled */
 u_int	cpu_mxcsr_mask;		/* Valid bits in mxcsr */
-#endif
 u_int	cpu_clflush_line_size = 32;
-u_int	cpu_stdext_feature;
-u_int	cpu_stdext_feature2;
+u_int	cpu_stdext_feature;	/* %ebx */
+u_int	cpu_stdext_feature2;	/* %ecx */
+u_int	cpu_stdext_feature3;	/* %edx */
+uint64_t cpu_ia32_arch_caps;
 u_int	cpu_max_ext_state_size;
 u_int	cpu_mon_mwait_flags;	/* MONITOR/MWAIT flags (CPUID.05H.ECX) */
 u_int	cpu_mon_min_size;	/* MONITOR minimum range size, bytes */
@@ -912,7 +910,7 @@ printcpuinfo(void)
 				"\033DBE"	/* Data Breakpoint extension */
 				"\034PTSC"	/* Performance TSC */
 				"\035PL2I"	/* L2I perf count */
-				"\036<b29>"
+				"\036MWAITX"	/* MONITORX/MWAITX instructions */
 				"\037<b30>"
 				"\040<b31>"
 				);
@@ -967,6 +965,7 @@ printcpuinfo(void)
 				       "\035AVX512CD"
 				       "\036SHA"
 				       "\037AVX512BW"
+				       "\040AVX512VL"
 				       );
 			}
 
@@ -984,6 +983,17 @@ printcpuinfo(void)
 				       );
 			}
 
+			if (cpu_stdext_feature3 != 0) {
+				printf("\n  Structured Extended Features3=0x%b",
+				    cpu_stdext_feature3,
+				       "\020"
+				       "\033IBPB"
+				       "\034STIBP"
+				       "\036ARCH_CAP"
+				       "\040SSBD"
+				       );
+			}
+
 			if ((cpu_feature2 & CPUID2_XSAVE) != 0) {
 				cpuid_count(0xd, 0x1, regs);
 				if (regs[0] != 0) {
@@ -995,6 +1005,25 @@ printcpuinfo(void)
 					    "\003XINUSE"
 					    "\004XSAVES");
 				}
+			}
+
+			if (cpu_ia32_arch_caps != 0) {
+				printf("\n  IA32_ARCH_CAPS=0x%b",
+				    (u_int)cpu_ia32_arch_caps,
+				       "\020"
+				       "\001RDCL_NO"
+				       "\002IBRS_ALL"
+				       );
+			}
+
+			if (amd_extended_feature_extensions != 0) {
+				printf("\n  "
+				    "AMD Extended Feature Extensions ID EBX="
+				    "0x%b", amd_extended_feature_extensions,
+				    "\020"
+				    "\001CLZERO"
+				    "\002IRPerf"
+				    "\003XSaveErPtr");
 			}
 
 			if (via_feature_rng != 0 || via_feature_xcrypt != 0)
@@ -1258,7 +1287,7 @@ static const char *const vm_pnames[] = {
 	NULL
 };
 
-static void
+void
 identify_hypervisor(void)
 {
 	u_int regs[4];
@@ -1276,6 +1305,18 @@ identify_hypervisor(void)
 	if (cpu_feature2 & CPUID2_HV) {
 		vm_guest = VM_GUEST_VM;
 		do_cpuid(0x40000000, regs);
+
+		/*
+		 * KVM from Linux kernels prior to commit
+		 * 57c22e5f35aa4b9b2fe11f73f3e62bbf9ef36190 set %eax
+		 * to 0 rather than a valid hv_high value.  Check for
+		 * the KVM signature bytes and fixup %eax to the
+		 * highest supported leaf in that case.
+		 */
+		if (regs[0] == 0 && regs[1] == 0x4b4d564b &&
+		    regs[2] == 0x564b4d56 && regs[3] == 0x0000004d)
+			regs[0] = 0x40000001;
+			
 		if (regs[0] >= 0x40000000) {
 			hv_high = regs[0];
 			((u_int *)&hv_vendor)[0] = regs[1];
@@ -1288,6 +1329,8 @@ identify_hypervisor(void)
 				vm_guest = VM_GUEST_HV;
 			else if (strcmp(hv_vendor, "KVMKVMKVM") == 0)
 				vm_guest = VM_GUEST_KVM;
+			else if (strcmp(hv_vendor, "bhyve bhyve") == 0)
+				vm_guest = VM_GUEST_BHYVE;
 		}
 		return;
 	}
@@ -1365,7 +1408,8 @@ fix_cpuid(void)
 	 * See BIOS and Kernel Developer’s Guide (BKDG) for AMD Family 15h
 	 * Models 60h-6Fh Processors, Publication # 50742.
 	 */
-	if (cpu_vendor_id == CPU_VENDOR_AMD && CPUID_TO_FAMILY(cpu_id) == 0x15) {
+	if (vm_guest == VM_GUEST_NO && cpu_vendor_id == CPU_VENDOR_AMD &&
+	    CPUID_TO_FAMILY(cpu_id) == 0x15) {
 		msr = rdmsr(MSR_EXTFEATURES);
 		if ((msr & ((uint64_t)1 << 54)) == 0) {
 			msr |= (uint64_t)1 << 54;
@@ -1376,23 +1420,11 @@ fix_cpuid(void)
 	return (false);
 }
 
-/*
- * Final stage of CPU identification.
- */
-#ifdef __i386__
 void
-finishidentcpu(void)
-#else
-void
-identify_cpu(void)
-#endif
+identify_cpu1(void)
 {
-	u_int regs[4], cpu_stdext_disable;
-#ifdef __i386__
-	u_char ccr3;
-#endif
+	u_int regs[4];
 
-#ifdef __amd64__
 	do_cpuid(0, regs);
 	cpu_high = regs[0];
 	((u_int *)&cpu_vendor)[0] = regs[1];
@@ -1405,9 +1437,46 @@ identify_cpu(void)
 	cpu_procinfo = regs[1];
 	cpu_feature = regs[3];
 	cpu_feature2 = regs[2];
+}
+
+void
+identify_cpu2(void)
+{
+	u_int regs[4], cpu_stdext_disable;
+
+	if (cpu_high >= 7) {
+		cpuid_count(7, 0, regs);
+		cpu_stdext_feature = regs[1];
+
+		/*
+		 * Some hypervisors failed to filter out unsupported
+		 * extended features.  Allow to disable the
+		 * extensions, activation of which requires setting a
+		 * bit in CR4, and which VM monitors do not support.
+		 */
+		cpu_stdext_disable = 0;
+		TUNABLE_INT_FETCH("hw.cpu_stdext_disable", &cpu_stdext_disable);
+		cpu_stdext_feature &= ~cpu_stdext_disable;
+
+		cpu_stdext_feature2 = regs[2];
+		cpu_stdext_feature3 = regs[3];
+
+		if ((cpu_stdext_feature3 & CPUID_STDEXT3_ARCH_CAP) != 0)
+			cpu_ia32_arch_caps = rdmsr(MSR_IA32_ARCH_CAP);
+	}
+}
+
+/*
+ * Final stage of CPU identification.
+ */
+void
+finishidentcpu(void)
+{
+	u_int regs[4];
+#ifdef __i386__
+	u_char ccr3;
 #endif
 
-	identify_hypervisor();
 	cpu_vendor_id = find_cpu_vendor_id();
 
 	if (fix_cpuid()) {
@@ -1422,25 +1491,7 @@ identify_cpu(void)
 		cpu_mon_max_size = regs[1] &  CPUID5_MON_MAX_SIZE;
 	}
 
-	if (cpu_high >= 7) {
-		cpuid_count(7, 0, regs);
-		cpu_stdext_feature = regs[1];
-
-		/*
-		 * Some hypervisors fail to filter out unsupported
-		 * extended features.  For now, disable the
-		 * extensions, activation of which requires setting a
-		 * bit in CR4, and which VM monitors do not support.
-		 */
-		if (cpu_feature2 & CPUID2_HV) {
-			cpu_stdext_disable = CPUID_STDEXT_FSGSBASE |
-			    CPUID_STDEXT_SMEP;
-		} else
-			cpu_stdext_disable = 0;
-		TUNABLE_INT_FETCH("hw.cpu_stdext_disable", &cpu_stdext_disable);
-		cpu_stdext_feature &= ~cpu_stdext_disable;
-		cpu_stdext_feature2 = regs[2];
-	}
+	identify_cpu2();
 
 #ifdef __i386__
 	if (cpu_high > 0 &&
@@ -1468,11 +1519,13 @@ identify_cpu(void)
 	}
 	if (cpu_exthigh >= 0x80000007) {
 		do_cpuid(0x80000007, regs);
+		amd_rascap = regs[1];
 		amd_pminfo = regs[3];
 	}
 	if (cpu_exthigh >= 0x80000008) {
 		do_cpuid(0x80000008, regs);
 		cpu_maxphyaddr = regs[0] & 0xff;
+		amd_extended_feature_extensions = regs[1];
 		cpu_procinfo2 = regs[2];
 	} else {
 		cpu_maxphyaddr = (cpu_feature & CPUID_PAE) != 0 ? 36 : 32;
@@ -1567,6 +1620,17 @@ identify_cpu(void)
 		}
 	}
 #endif
+}
+
+int
+pti_get_default(void)
+{
+
+	if (strcmp(cpu_vendor, AMD_VENDOR_ID) == 0)
+		return (0);
+	if ((cpu_ia32_arch_caps & IA32_ARCH_CAP_RDCL_NO) != 0)
+		return (0);
+	return (1);
 }
 
 static u_int
@@ -2157,9 +2221,27 @@ print_svm_info(void)
 	       "\011<b8>"
 	       "\012<b9>"
 	       "\013PauseFilter"	/* PAUSE intercept filter */    
-	       "\014<b11>"
+	       "\014EncryptedMcodePatch"
 	       "\015PauseFilterThreshold" /* PAUSE filter threshold */
 	       "\016AVIC"		/* virtual interrupt controller */
+	       "\017<b14>"
+	       "\020V_VMSAVE_VMLOAD"
+	       "\021vGIF"
+	       "\022<b17>"
+	       "\023<b18>"
+	       "\024<b19>"
+	       "\025<b20>"
+	       "\026<b21>"
+	       "\027<b22>"
+	       "\030<b23>"
+	       "\031<b24>"
+	       "\032<b25>"
+	       "\033<b26>"
+	       "\034<b27>"
+	       "\035<b28>"
+	       "\036<b29>"
+	       "\037<b30>"
+	       "\040<b31>"
                 );
 	printf("\nRevision=%d, ASIDs=%d", regs[0] & 0xff, regs[1]);
 }

@@ -1,4 +1,6 @@
 /*
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1988, 1993
  *      The Regents of the University of California.
  * Copyright (c) 2005 Andre Oppermann, Internet Business Solutions AG.
@@ -12,7 +14,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -108,6 +110,7 @@ ip_dooptions(struct mbuf *m, int pass)
 	struct nhop4_extended nh_ext;
 	struct	sockaddr_in ipaddr = { sizeof(ipaddr), AF_INET };
 
+	NET_EPOCH_ENTER();
 	/* Ignore or reject packets with IP options. */
 	if (V_ip_doopts == 0)
 		return 0;
@@ -196,16 +199,19 @@ ip_dooptions(struct mbuf *m, int pass)
 #endif
 			if (!V_ip_dosourceroute) {
 				if (V_ipforwarding) {
-					char buf[16]; /* aaa.bbb.ccc.ddd\0 */
+					char srcbuf[INET_ADDRSTRLEN];
+					char dstbuf[INET_ADDRSTRLEN];
+
 					/*
 					 * Acting as a router, so generate
 					 * ICMP
 					 */
 nosourcerouting:
-					strcpy(buf, inet_ntoa(ip->ip_dst));
 					log(LOG_WARNING, 
-					    "attempted source route from %s to %s\n",
-					    inet_ntoa(ip->ip_src), buf);
+					    "attempted source route from %s "
+					    "to %s\n",
+					    inet_ntoa_r(ip->ip_src, srcbuf),
+					    inet_ntoa_r(ip->ip_dst, dstbuf));
 					type = ICMP_UNREACH;
 					code = ICMP_UNREACH_SRCFAIL;
 					goto bad;
@@ -219,6 +225,7 @@ dropit:
 #endif
 					IPSTAT_INC(ips_cantforward);
 					m_freem(m);
+					NET_EPOCH_EXIT();
 					return (1);
 				}
 			}
@@ -245,7 +252,6 @@ dropit:
 
 				memcpy(cp + off, &(IA_SIN(ia)->sin_addr),
 				    sizeof(struct in_addr));
-				ifa_free(&ia->ia_ifa);
 			} else {
 				/* XXX MRT 0 for routing */
 				if (fib4_lookup_nh_ext(M_GETFIB(m),
@@ -293,7 +299,6 @@ dropit:
 			if ((ia = (INA)ifa_ifwithaddr((SA)&ipaddr)) != NULL) {
 				memcpy(cp + off, &(IA_SIN(ia)->sin_addr),
 				    sizeof(struct in_addr));
-				ifa_free(&ia->ia_ifa);
 			} else if (fib4_lookup_nh_ext(M_GETFIB(m),
 			    ipaddr.sin_addr, 0, 0, &nh_ext) == 0) {
 				memcpy(cp + off, &nh_ext.nh_src,
@@ -348,7 +353,6 @@ dropit:
 					continue;
 				(void)memcpy(sin, &IA_SIN(ia)->sin_addr,
 				    sizeof(struct in_addr));
-				ifa_free(&ia->ia_ifa);
 				cp[IPOPT_OFFSET] += sizeof(struct in_addr);
 				off += sizeof(struct in_addr);
 				break;
@@ -376,12 +380,14 @@ dropit:
 			cp[IPOPT_OFFSET] += sizeof(uint32_t);
 		}
 	}
+	NET_EPOCH_EXIT();
 	if (forward && V_ipforwarding) {
 		ip_forward(m, 1);
 		return (1);
 	}
 	return (0);
 bad:
+	NET_EPOCH_EXIT();
 	icmp_error(m, type, code, 0, 0);
 	IPSTAT_INC(ips_badoptions);
 	return (1);

@@ -1,6 +1,8 @@
 /* 	$NetBSD: intr.h,v 1.7 2003/06/16 20:01:00 thorpej Exp $	*/
 
 /*-
+ * SPDX-License-Identifier: BSD-4-Clause
+ *
  * Copyright (c) 1997 Mark Brinicombe.
  * All rights reserved.
  *
@@ -76,19 +78,12 @@ int intr_pic_ipi_setup(u_int, const char *, intr_ipi_handler_t *, void *);
 #elif defined(CPU_ARM9) || defined(SOC_MV_KIRKWOOD) || \
     defined(CPU_XSCALE_IXP435)
 #define NIRQ		64
-#elif defined(CPU_CORTEXA8) || defined(CPU_CORTEXA_MP)
+#elif defined(CPU_CORTEXA)
 #define NIRQ		1020
 #elif defined(CPU_KRAIT)
 #define NIRQ		288
 #elif defined(CPU_ARM1176)
 #define NIRQ		128
-#elif defined(SOC_MV_ARMADAXP)
-#define MAIN_IRQ_NUM		116
-#define ERR_IRQ_NUM		32
-#define ERR_IRQ			(MAIN_IRQ_NUM)
-#define MSI_IRQ_NUM		32
-#define MSI_IRQ			(ERR_IRQ + ERR_IRQ_NUM)
-#define NIRQ			(MAIN_IRQ_NUM + ERR_IRQ_NUM + MSI_IRQ_NUM)
 #else
 #define NIRQ		32
 #endif

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001 Atsushi Onoe
  * Copyright (c) 2002-2008 Sam Leffler, Errno Consulting
  * All rights reserved.
@@ -171,6 +173,8 @@ int	ieee80211_crypto_delkey(struct ieee80211vap *,
 int	ieee80211_crypto_setkey(struct ieee80211vap *, struct ieee80211_key *);
 void	ieee80211_crypto_delglobalkeys(struct ieee80211vap *);
 void	ieee80211_crypto_reload_keys(struct ieee80211com *);
+void	ieee80211_crypto_set_deftxkey(struct ieee80211vap *,
+	    ieee80211_keyix kid);
 
 /*
  * Template for a supported cipher.  Ciphers register with the

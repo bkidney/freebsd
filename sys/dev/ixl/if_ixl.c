@@ -1,6 +1,6 @@
 /******************************************************************************
 
-  Copyright (c) 2013-2015, Intel Corporation 
+  Copyright (c) 2013-2017, Intel Corporation
   All rights reserved.
   
   Redistribution and use in source and binary forms, with or without 
@@ -35,6 +35,11 @@
 #include "ixl.h"
 #include "ixl_pf.h"
 
+#ifdef IXL_IW
+#include "ixl_iw.h"
+#include "ixl_iw_int.h"
+#endif
+
 #ifdef PCI_IOV
 #include "ixl_pf_iov.h"
 #endif
@@ -42,7 +47,13 @@
 /*********************************************************************
  *  Driver version
  *********************************************************************/
-char ixl_driver_version[] = "1.6.6-k";
+#define IXL_DRIVER_VERSION_MAJOR	1
+#define IXL_DRIVER_VERSION_MINOR	9
+#define IXL_DRIVER_VERSION_BUILD	9
+
+char ixl_driver_version[] = __XSTRING(IXL_DRIVER_VERSION_MAJOR) "."
+			    __XSTRING(IXL_DRIVER_VERSION_MINOR) "."
+			    __XSTRING(IXL_DRIVER_VERSION_BUILD) "-k";
 
 /*********************************************************************
  *  PCI Device ID Table
@@ -70,6 +81,8 @@ static ixl_vendor_info_t ixl_vendor_info_array[] =
 	{I40E_INTEL_VENDOR_ID, I40E_DEV_ID_1G_BASE_T_X722, 0, 0, 0},
 	{I40E_INTEL_VENDOR_ID, I40E_DEV_ID_10G_BASE_T_X722, 0, 0, 0},
 	{I40E_INTEL_VENDOR_ID, I40E_DEV_ID_SFP_I_X722, 0, 0, 0},
+	{I40E_INTEL_VENDOR_ID, I40E_DEV_ID_25G_B, 0, 0, 0},
+	{I40E_INTEL_VENDOR_ID, I40E_DEV_ID_25G_SFP28, 0, 0, 0},
 	/* required last entry */
 	{0, 0, 0, 0, 0}
 };
@@ -79,7 +92,7 @@ static ixl_vendor_info_t ixl_vendor_info_array[] =
  *********************************************************************/
 
 static char    *ixl_strings[] = {
-	"Intel(R) Ethernet Connection XL710/X722 Driver"
+	"Intel(R) Ethernet Connection 700 Series PF Driver"
 };
 
 
@@ -92,7 +105,6 @@ static int      ixl_detach(device_t);
 static int      ixl_shutdown(device_t);
 
 static int	ixl_save_pf_tunables(struct ixl_pf *);
-static int	ixl_attach_get_link_status(struct ixl_pf *);
 
 /*********************************************************************
  *  FreeBSD Device Interface Entry Points
@@ -119,9 +131,11 @@ static driver_t ixl_driver = {
 devclass_t ixl_devclass;
 DRIVER_MODULE(ixl, pci, ixl_driver, ixl_devclass, 0, 0);
 
+MODULE_VERSION(ixl, 1);
+
 MODULE_DEPEND(ixl, pci, 1, 1, 1);
 MODULE_DEPEND(ixl, ether, 1, 1, 1);
-#ifdef DEV_NETMAP
+#if defined(DEV_NETMAP) && __FreeBSD_version >= 1100000
 MODULE_DEPEND(ixl, netmap, 1, 1, 1);
 #endif /* DEV_NETMAP */
 
@@ -142,13 +156,18 @@ SYSCTL_INT(_hw_ixl, OID_AUTO, enable_msix, CTLFLAG_RDTUN, &ixl_enable_msix, 0,
     "Enable MSI-X interrupts");
 
 /*
-** Number of descriptors per ring:
-**   - TX and RX are the same size
+** Number of descriptors per ring
+** - TX and RX sizes are independently configurable
 */
-static int ixl_ring_size = DEFAULT_RING;
-TUNABLE_INT("hw.ixl.ring_size", &ixl_ring_size);
-SYSCTL_INT(_hw_ixl, OID_AUTO, ring_size, CTLFLAG_RDTUN,
-    &ixl_ring_size, 0, "Descriptor Ring Size");
+static int ixl_tx_ring_size = IXL_DEFAULT_RING;
+TUNABLE_INT("hw.ixl.tx_ring_size", &ixl_tx_ring_size);
+SYSCTL_INT(_hw_ixl, OID_AUTO, tx_ring_size, CTLFLAG_RDTUN,
+    &ixl_tx_ring_size, 0, "TX Descriptor Ring Size");
+
+static int ixl_rx_ring_size = IXL_DEFAULT_RING;
+TUNABLE_INT("hw.ixl.rx_ring_size", &ixl_rx_ring_size);
+SYSCTL_INT(_hw_ixl, OID_AUTO, rx_ring_size, CTLFLAG_RDTUN,
+    &ixl_rx_ring_size, 0, "RX Descriptor Ring Size");
 
 /* 
 ** This can be set manually, if left as 0 the
@@ -160,12 +179,27 @@ TUNABLE_INT("hw.ixl.max_queues", &ixl_max_queues);
 SYSCTL_INT(_hw_ixl, OID_AUTO, max_queues, CTLFLAG_RDTUN,
     &ixl_max_queues, 0, "Number of Queues");
 
+/*
+ * Leave this on unless you need to send flow control
+ * frames (or other control frames) from software
+ */
 static int ixl_enable_tx_fc_filter = 1;
 TUNABLE_INT("hw.ixl.enable_tx_fc_filter",
     &ixl_enable_tx_fc_filter);
 SYSCTL_INT(_hw_ixl, OID_AUTO, enable_tx_fc_filter, CTLFLAG_RDTUN,
     &ixl_enable_tx_fc_filter, 0,
     "Filter out packets with Ethertype 0x8808 from being sent out by non-HW sources");
+
+/*
+ * Different method for processing TX descriptor
+ * completion.
+ */
+static int ixl_enable_head_writeback = 1;
+TUNABLE_INT("hw.ixl.enable_head_writeback",
+    &ixl_enable_head_writeback);
+SYSCTL_INT(_hw_ixl, OID_AUTO, enable_head_writeback, CTLFLAG_RDTUN,
+    &ixl_enable_head_writeback, 0,
+    "For detecting last completed TX descriptor by hardware, use value written by HW instead of checking descriptors");
 
 static int ixl_core_debug_mask = 0;
 TUNABLE_INT("hw.ixl.core_debug_mask",
@@ -205,6 +239,22 @@ static int ixl_tx_itr = IXL_ITR_4K;
 TUNABLE_INT("hw.ixl.tx_itr", &ixl_tx_itr);
 SYSCTL_INT(_hw_ixl, OID_AUTO, tx_itr, CTLFLAG_RDTUN,
     &ixl_tx_itr, 0, "TX Interrupt Rate");
+
+#ifdef IXL_IW
+int ixl_enable_iwarp = 0;
+TUNABLE_INT("hw.ixl.enable_iwarp", &ixl_enable_iwarp);
+SYSCTL_INT(_hw_ixl, OID_AUTO, enable_iwarp, CTLFLAG_RDTUN,
+    &ixl_enable_iwarp, 0, "iWARP enabled");
+
+#if __FreeBSD_version < 1100000
+int ixl_limit_iwarp_msix = 1;
+#else
+int ixl_limit_iwarp_msix = IXL_IW_MAX_MSIX;
+#endif
+TUNABLE_INT("hw.ixl.limit_iwarp_msix", &ixl_limit_iwarp_msix);
+SYSCTL_INT(_hw_ixl, OID_AUTO, limit_iwarp_msix, CTLFLAG_RDTUN,
+    &ixl_limit_iwarp_msix, 0, "Limit MSIX vectors assigned to iWARP");
+#endif
 
 #ifdef DEV_NETMAP
 #define NETMAP_IXL_MAIN /* only bring in one part of the netmap code */
@@ -261,30 +311,6 @@ ixl_probe(device_t dev)
 	return (ENXIO);
 }
 
-static int
-ixl_attach_get_link_status(struct ixl_pf *pf)
-{
-	struct i40e_hw *hw = &pf->hw;
-	device_t dev = pf->dev;
-	int error = 0;
-
-	if (((hw->aq.fw_maj_ver == 4) && (hw->aq.fw_min_ver < 33)) ||
-	    (hw->aq.fw_maj_ver < 4)) {
-		i40e_msec_delay(75);
-		error = i40e_aq_set_link_restart_an(hw, TRUE, NULL);
-		if (error) {
-			device_printf(dev, "link restart failed, aq_err=%d\n",
-			    pf->hw.aq.asq_last_status);
-			return error;
-		}
-	}
-
-	/* Determine link state */
-	hw->phy.get_link_info = TRUE;
-	i40e_get_link_status(hw, &pf->link_up);
-	return (0);
-}
-
 /*
  * Sanity check and save off tunable values.
  */
@@ -296,25 +322,45 @@ ixl_save_pf_tunables(struct ixl_pf *pf)
 	/* Save tunable information */
 	pf->enable_msix = ixl_enable_msix;
 	pf->max_queues = ixl_max_queues;
-	pf->ringsz = ixl_ring_size;
 	pf->enable_tx_fc_filter = ixl_enable_tx_fc_filter;
 	pf->dynamic_rx_itr = ixl_dynamic_rx_itr;
 	pf->dynamic_tx_itr = ixl_dynamic_tx_itr;
-	pf->tx_itr = ixl_tx_itr;
-	pf->rx_itr = ixl_rx_itr;
 	pf->dbg_mask = ixl_core_debug_mask;
 	pf->hw.debug_mask = ixl_shared_debug_mask;
+#ifdef DEV_NETMAP
+	if (ixl_enable_head_writeback == 0)
+		device_printf(dev, "Head writeback mode cannot be disabled "
+		    "when netmap is enabled\n");
+	pf->vsi.enable_head_writeback = 1;
+#else
+	pf->vsi.enable_head_writeback = !!(ixl_enable_head_writeback);
+#endif
 
-	if (ixl_ring_size < IXL_MIN_RING
-	     || ixl_ring_size > IXL_MAX_RING
-	     || ixl_ring_size % IXL_RING_INCREMENT != 0) {
-		device_printf(dev, "Invalid ring_size value of %d set!\n",
-		    ixl_ring_size);
-		device_printf(dev, "ring_size must be between %d and %d, "
-		    "inclusive, and must be a multiple of %d\n",
-		    IXL_MIN_RING, IXL_MAX_RING, IXL_RING_INCREMENT);
-		return (EINVAL);
-	}
+	ixl_vsi_setup_rings_size(&pf->vsi, ixl_tx_ring_size, ixl_rx_ring_size);
+
+	if (ixl_tx_itr < 0 || ixl_tx_itr > IXL_MAX_ITR) {
+		device_printf(dev, "Invalid tx_itr value of %d set!\n",
+		    ixl_tx_itr);
+		device_printf(dev, "tx_itr must be between %d and %d, "
+		    "inclusive\n",
+		    0, IXL_MAX_ITR);
+		device_printf(dev, "Using default value of %d instead\n",
+		    IXL_ITR_4K);
+		pf->tx_itr = IXL_ITR_4K;
+	} else
+		pf->tx_itr = ixl_tx_itr;
+
+	if (ixl_rx_itr < 0 || ixl_rx_itr > IXL_MAX_ITR) {
+		device_printf(dev, "Invalid rx_itr value of %d set!\n",
+		    ixl_rx_itr);
+		device_printf(dev, "rx_itr must be between %d and %d, "
+		    "inclusive\n",
+		    0, IXL_MAX_ITR);
+		device_printf(dev, "Using default value of %d instead\n",
+		    IXL_ITR_8K);
+		pf->rx_itr = IXL_ITR_8K;
+	} else
+		pf->rx_itr = ixl_rx_itr;
 
 	return (0);
 }
@@ -351,6 +397,7 @@ ixl_attach(device_t dev)
 	*/
 	vsi = &pf->vsi;
 	vsi->dev = pf->dev;
+	vsi->back = pf;
 
 	/* Save tunable values */
 	error = ixl_save_pf_tunables(pf);
@@ -389,12 +436,6 @@ ixl_attach(device_t dev)
 		goto err_out;
 	}
 
-	/*
-	 * Allocate interrupts and figure out number of queues to use
-	 * for PF interface
-	 */
-	pf->msix = ixl_init_msix(pf);
-
 	/* Set up the admin queue */
 	hw->aq.num_arq_entries = IXL_AQ_LEN;
 	hw->aq.num_asq_entries = IXL_AQ_LEN;
@@ -412,23 +453,24 @@ ixl_attach(device_t dev)
 
 	if (status == I40E_ERR_FIRMWARE_API_VERSION) {
 		device_printf(dev, "The driver for the device stopped "
-		    "because the NVM image is newer than expected.\n"
-		    "You must install the most recent version of "
+		    "because the NVM image is newer than expected.\n");
+		device_printf(dev, "You must install the most recent version of "
 		    "the network driver.\n");
 		error = EIO;
 		goto err_out;
 	}
 
         if (hw->aq.api_maj_ver == I40E_FW_API_VERSION_MAJOR &&
-	    hw->aq.api_min_ver > I40E_FW_API_VERSION_MINOR)
+	    hw->aq.api_min_ver > I40E_FW_MINOR_VERSION(hw)) {
 		device_printf(dev, "The driver for the device detected "
-		    "a newer version of the NVM image than expected.\n"
-		    "Please install the most recent version of the network driver.\n");
-	else if (hw->aq.api_maj_ver < I40E_FW_API_VERSION_MAJOR ||
-	    hw->aq.api_min_ver < (I40E_FW_API_VERSION_MINOR - 1))
+		    "a newer version of the NVM image than expected.\n");
+		device_printf(dev, "Please install the most recent version "
+		    "of the network driver.\n");
+	} else if (hw->aq.api_maj_ver == 1 && hw->aq.api_min_ver < 4) {
 		device_printf(dev, "The driver for the device detected "
-		    "an older version of the NVM image than expected.\n"
-		    "Please update the NVM image.\n");
+		    "an older version of the NVM image than expected.\n");
+		device_printf(dev, "Please update the NVM image.\n");
+	}
 
 	/* Clear PXE mode */
 	i40e_clear_pxe_mode(hw);
@@ -439,6 +481,12 @@ ixl_attach(device_t dev)
 		device_printf(dev, "HW capabilities failure!\n");
 		goto err_get_cap;
 	}
+
+	/*
+	 * Allocate interrupts and figure out number of queues to use
+	 * for PF interface
+	 */
+	pf->msix = ixl_init_msix(pf);
 
 	/* Set up host memory cache */
 	status = i40e_init_lan_hmc(hw, hw->func_caps.num_tx_qp,
@@ -475,8 +523,10 @@ ixl_attach(device_t dev)
 
 	/* Disable LLDP from the firmware for certain NVM versions */
 	if (((pf->hw.aq.fw_maj_ver == 4) && (pf->hw.aq.fw_min_ver < 3)) ||
-	    (pf->hw.aq.fw_maj_ver < 4))
+	    (pf->hw.aq.fw_maj_ver < 4)) {
 		i40e_aq_stop_lldp(hw, TRUE, NULL);
+		pf->state |= IXL_PF_STATE_FW_LLDP_DISABLED;
+	}
 
 	/* Get MAC addresses from hardware */
 	i40e_get_mac_addr(hw, hw->mac.addr);
@@ -487,6 +537,14 @@ ixl_attach(device_t dev)
 	}
 	bcopy(hw->mac.addr, hw->mac.perm_addr, ETHER_ADDR_LEN);
 	i40e_get_port_mac_addr(hw, hw->mac.port_addr);
+
+	/* Query device FW LLDP status */
+	ixl_get_fw_lldp_status(pf);
+	/* Tell FW to apply DCB config on link up */
+	if ((hw->mac.type != I40E_MAC_X722)
+	    && ((pf->hw.aq.api_maj_ver > 1)
+	    || (pf->hw.aq.api_maj_ver == 1 && pf->hw.aq.api_min_ver >= 7)))
+		i40e_aq_set_dcb_parameters(hw, true, NULL);
 
 	/* Initialize mac filter list for VSI */
 	SLIST_INIT(&vsi->ftl);
@@ -529,7 +587,7 @@ ixl_attach(device_t dev)
 	}
 
 	/* Get the bus configuration and set the shared code's config */
-	ixl_get_bus_info(hw, dev);
+	ixl_get_bus_info(pf);
 
 	/*
 	 * In MSI-X mode, initialize the Admin Queue interrupt,
@@ -539,19 +597,49 @@ ixl_attach(device_t dev)
 	if (pf->msix > 1) {
 		error = ixl_setup_adminq_msix(pf);
 		if (error) {
-			device_printf(dev, "ixl_setup_adminq_msix error: %d\n",
+			device_printf(dev, "ixl_setup_adminq_msix() error: %d\n",
 			    error);
 			goto err_late;
 		}
 		error = ixl_setup_adminq_tq(pf);
 		if (error) {
-			device_printf(dev, "ixl_setup_adminq_tq error: %d\n",
+			device_printf(dev, "ixl_setup_adminq_tq() error: %d\n",
 			    error);
 			goto err_late;
 		}
 		ixl_configure_intr0_msix(pf);
-		ixl_enable_adminq(hw);
+		ixl_enable_intr0(hw);
+
+		error = ixl_setup_queue_msix(vsi);
+		if (error)
+			device_printf(dev, "ixl_setup_queue_msix() error: %d\n",
+			    error);
+		error = ixl_setup_queue_tqs(vsi);
+		if (error)
+			device_printf(dev, "ixl_setup_queue_tqs() error: %d\n",
+			    error);
+	} else {
+		error = ixl_setup_legacy(pf);
+
+		error = ixl_setup_adminq_tq(pf);
+		if (error) {
+			device_printf(dev, "ixl_setup_adminq_tq() error: %d\n",
+			    error);
+			goto err_late;
+		}
+
+		error = ixl_setup_queue_tqs(vsi);
+		if (error)
+			device_printf(dev, "ixl_setup_queue_tqs() error: %d\n",
+			    error);
 	}
+
+	if (error) {
+		device_printf(dev, "interrupt setup error: %d\n", error);
+	}
+
+	/* Set initial advertised speed sysctl value */
+	ixl_set_initial_advertised_speeds(pf);
 
 	/* Initialize statistics & add sysctls */
 	ixl_add_device_sysctls(pf);
@@ -571,8 +659,36 @@ ixl_attach(device_t dev)
 #endif
 
 #ifdef DEV_NETMAP
-	ixl_netmap_attach(vsi);
+	if (vsi->num_rx_desc == vsi->num_tx_desc) {
+		vsi->queues[0].num_desc = vsi->num_rx_desc;
+		ixl_netmap_attach(vsi);
+	} else
+		device_printf(dev,
+		    "Netmap is not supported when RX and TX descriptor ring sizes differ\n");
+
 #endif /* DEV_NETMAP */
+
+#ifdef IXL_IW
+	if (hw->func_caps.iwarp && ixl_enable_iwarp) {
+		pf->iw_enabled = (pf->iw_msix > 0) ? true : false;
+		if (pf->iw_enabled) {
+			error = ixl_iw_pf_attach(pf);
+			if (error) {
+				device_printf(dev,
+				    "interfacing to iwarp driver failed: %d\n",
+				    error);
+				goto err_late;
+			} else
+				device_printf(dev, "iWARP ready\n");
+		} else
+			device_printf(dev,
+			    "iwarp disabled on this device (no msix vectors)\n");
+	} else {
+		pf->iw_enabled = false;
+		device_printf(dev, "The device is not iWARP enabled\n");
+	}
+#endif
+
 	INIT_DEBUGOUT("ixl_attach: end");
 	return (0);
 
@@ -609,7 +725,7 @@ ixl_detach(device_t dev)
 	struct i40e_hw		*hw = &pf->hw;
 	struct ixl_vsi		*vsi = &pf->vsi;
 	enum i40e_status_code	status;
-#ifdef PCI_IOV
+#if defined(PCI_IOV) || defined(IXL_IW)
 	int			error;
 #endif
 
@@ -629,11 +745,12 @@ ixl_detach(device_t dev)
 	}
 #endif
 
+	/* Remove all previously allocated media types */
+	ifmedia_removeall(&vsi->media);
+
 	ether_ifdetach(vsi->ifp);
 	if (vsi->ifp->if_drv_flags & IFF_DRV_RUNNING)
 		ixl_stop(pf);
-
-	ixl_free_queue_tqs(vsi);
 
 	/* Shutdown LAN HMC */
 	status = i40e_shutdown_lan_hmc(hw);
@@ -641,10 +758,13 @@ ixl_detach(device_t dev)
 		device_printf(dev,
 		    "Shutdown LAN HMC failed with code %d\n", status);
 
+	/* Teardown LAN queue resources */
+	ixl_teardown_queue_msix(vsi);
+	ixl_free_queue_tqs(vsi);
 	/* Shutdown admin queue */
-	ixl_disable_adminq(hw);
-	ixl_free_adminq_tq(pf);
+	ixl_disable_intr0(hw);
 	ixl_teardown_adminq_msix(pf);
+	ixl_free_adminq_tq(pf);
 	status = i40e_shutdown_adminq(hw);
 	if (status)
 		device_printf(dev,
@@ -657,6 +777,17 @@ ixl_detach(device_t dev)
 		EVENTHANDLER_DEREGISTER(vlan_unconfig, vsi->vlan_detach);
 
 	callout_drain(&pf->timer);
+
+#ifdef IXL_IW
+	if (ixl_enable_iwarp && pf->iw_enabled) {
+		error = ixl_iw_pf_detach(pf);
+		if (error == EBUSY) {
+			device_printf(dev, "iwarp in use; stop it first.\n");
+			return (error);
+		}
+	}
+#endif
+
 #ifdef DEV_NETMAP
 	netmap_detach(vsi->ifp);
 #endif /* DEV_NETMAP */

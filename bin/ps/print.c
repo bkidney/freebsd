@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1990, 1993, 1994
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -49,6 +51,7 @@ __FBSDID("$FreeBSD$");
 
 #include <err.h>
 #include <grp.h>
+#include <jail.h>
 #include <langinfo.h>
 #include <locale.h>
 #include <math.h>
@@ -262,9 +265,9 @@ state(KINFO *k, VARENT *ve __unused)
 	cp++;
 	if (!(flag & P_INMEM))
 		*cp++ = 'W';
-	if (k->ki_p->ki_nice < NZERO)
+	if (k->ki_p->ki_nice < NZERO || k->ki_p->ki_pri.pri_class == PRI_REALTIME)
 		*cp++ = '<';
-	else if (k->ki_p->ki_nice > NZERO)
+	else if (k->ki_p->ki_nice > NZERO || k->ki_p->ki_pri.pri_class == PRI_IDLE)
 		*cp++ = 'N';
 	if (flag & P_TRACED)
 		*cp++ = 'X';
@@ -274,6 +277,8 @@ state(KINFO *k, VARENT *ve __unused)
 		*cp++ = 'V';
 	if ((flag & P_SYSTEM) || k->ki_p->ki_lock > 0)
 		*cp++ = 'L';
+	if ((k->ki_p->ki_cr_flags & CRED_FLAG_CAPMODE) != 0)
+		*cp++ = 'C';
 	if (k->ki_p->ki_kiflag & KI_SLEADER)
 		*cp++ = 's';
 	if ((flag & P_CONTROLT) && k->ki_p->ki_pgid == k->ki_p->ki_tpgid)
@@ -835,4 +840,17 @@ loginclass(KINFO *k, VARENT *ve __unused)
 		return (strdup("-"));
 	}
 	return (strdup(k->ki_p->ki_loginclass));
+}
+
+char *
+jailname(KINFO *k, VARENT *ve __unused)
+{
+	char *name;
+
+	if (k->ki_p->ki_jid == 0)
+		return (strdup("-"));
+	name = jail_getname(k->ki_p->ki_jid);
+	if (name == NULL)
+		return (strdup("-"));
+	return (name);
 }

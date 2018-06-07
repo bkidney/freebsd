@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1980, 1990, 1993, 1994
  *	The Regents of the University of California.  All rights reserved.
  * (c) UNIX System Laboratories, Inc.
@@ -15,7 +17,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -54,6 +56,7 @@ __FBSDID("$FreeBSD$");
 #include <ufs/ufs/ufsmount.h>
 #endif
 #include <err.h>
+#include <getopt.h>
 #include <libutil.h>
 #include <locale.h>
 #ifdef MOUNT_CHAR_DEVS
@@ -107,6 +110,12 @@ static int	thousands;
 static struct	ufs_args mdev;
 #endif
 
+static const struct option long_options[] =
+{
+	{ "si", no_argument, NULL, 'H' },
+	{ NULL, no_argument, NULL, 0 },
+};
+
 int
 main(int argc, char *argv[])
 {
@@ -142,7 +151,8 @@ main(int argc, char *argv[])
 	if (argc < 0)
 		exit(1);
 
-	while ((ch = getopt(argc, argv, "abcgHhiklmnPt:T,")) != -1)
+	while ((ch = getopt_long(argc, argv, "+abcgHhiklmnPt:T,", long_options,
+	    NULL)) != -1)
 		switch (ch) {
 		case 'a':
 			aflag = 1;
@@ -244,9 +254,11 @@ main(int argc, char *argv[])
 				rv = 1;
 				continue;
 			}
-#ifdef MOUNT_CHAR_DEVS
 		} else if (S_ISCHR(stbuf.st_mode)) {
 			if ((mntpt = getmntpt(*argv)) == NULL) {
+#ifdef MOUNT_CHAR_DEVS
+				xo_warnx(
+				    "df on unmounted devices is deprecated");
 				mdev.fspec = *argv;
 				mntpath = strdup("/tmp/df.XXXXXX");
 				if (mntpath == NULL) {
@@ -295,8 +307,12 @@ main(int argc, char *argv[])
 				(void)rmdir(mntpt);
 				free(mntpath);
 				continue;
-			}
+#else
+				xo_warnx("%s: not mounted", *argv);
+				rv = 1;
+				continue;
 #endif
+			}
 		} else
 			mntpt = *argv;
 
@@ -490,7 +506,7 @@ prtstat(struct statfs *sfsp, struct maxwidths *mwp)
 		xo_emit("{T:/%-*s}", mwp->mntfrom, "Filesystem");
 		if (Tflag)
 			xo_emit("  {T:/%-*s}", mwp->fstype, "Type");
-		xo_emit(" {T:/%*s} {T:/%*s} {T:/%*s} Capacity",
+		xo_emit(" {T:/%*s} {T:/%*s} {T:/%*s} {T:Capacity}",
 			mwp->total, header,
 			mwp->used, "Used", mwp->avail, "Avail");
 		if (iflag) {

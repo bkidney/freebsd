@@ -47,6 +47,7 @@
 #define IG4_RBUFMASK	(IG4_RBUFSIZE - 1)
 
 enum ig4_op { IG4_IDLE, IG4_READ, IG4_WRITE };
+enum ig4_vers { IG4_HASWELL, IG4_ATOM, IG4_SKYLAKE };
 
 struct ig4iic_softc {
 	device_t	dev;
@@ -58,6 +59,7 @@ struct ig4iic_softc {
 	int		intr_rid;
 	void		*intr_handle;
 	int		intr_type;
+	enum ig4_vers	version;
 	enum ig4_op	op;
 	int		cmd;
 	int		rnext;
@@ -65,7 +67,7 @@ struct ig4iic_softc {
 	char		rbuf[IG4_RBUFSIZE];
 	int		error;
 	uint8_t		last_slave;
-	int		pci_attached : 1;
+	int		platform_attached : 1;
 	int		use_10bit : 1;
 	int		slave_valid : 1;
 	int		read_started : 1;

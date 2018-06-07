@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright 1996, 1997, 1998, 1999 John D. Polstra.
  * All rights reserved.
  *
@@ -344,6 +346,20 @@ reloc_jmpslots(Obj_Entry *obj, int flags, RtldLockState *lockstate)
     return 0;
 }
 
+/* Fixup the jump slot at "where" to transfer control to "target". */
+Elf_Addr
+reloc_jmpslot(Elf_Addr *where, Elf_Addr target,
+    const struct Struct_Obj_Entry *obj, const struct Struct_Obj_Entry *refobj,
+    const Elf_Rel *rel)
+{
+#ifdef dbg
+	dbg("reloc_jmpslot: *%p = %p", where, (void *)target);
+#endif
+	if (!ld_bind_not)
+		*where = target;
+	return (target);
+}
+
 int
 reloc_iresolve(Obj_Entry *obj, RtldLockState *lockstate)
 {
@@ -454,6 +470,12 @@ ifunc_init(Elf_Auxinfo aux_info[__min_size(AT_COUNT)] __unused)
 		cpu_stdext_feature = p[1];
 		cpu_stdext_feature2 = p[2];
 	}
+}
+
+void
+pre_init(void)
+{
+
 }
 
 void

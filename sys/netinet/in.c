@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  * Copyright (C) 2001 WIDE Project.  All rights reserved.
@@ -11,7 +13,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -71,7 +73,7 @@ __FBSDID("$FreeBSD$");
 #include <netinet/udp_var.h>
 
 static int in_aifaddr_ioctl(u_long, caddr_t, struct ifnet *, struct thread *);
-static int in_difaddr_ioctl(caddr_t, struct ifnet *, struct thread *);
+static int in_difaddr_ioctl(u_long, caddr_t, struct ifnet *, struct thread *);
 
 static void	in_socktrim(struct sockaddr_in *);
 static void	in_purgemaddrs(struct ifnet *);
@@ -96,11 +98,11 @@ int
 in_localaddr(struct in_addr in)
 {
 	struct rm_priotracker in_ifa_tracker;
-	register u_long i = ntohl(in.s_addr);
-	register struct in_ifaddr *ia;
+	u_long i = ntohl(in.s_addr);
+	struct in_ifaddr *ia;
 
 	IN_IFADDR_RLOCK(&in_ifa_tracker);
-	TAILQ_FOREACH(ia, &V_in_ifaddrhead, ia_link) {
+	CK_STAILQ_FOREACH(ia, &V_in_ifaddrhead, ia_link) {
 		if ((i & ia->ia_subnetmask) == ia->ia_subnet) {
 			IN_IFADDR_RUNLOCK(&in_ifa_tracker);
 			return (1);
@@ -141,7 +143,7 @@ in_ifhasaddr(struct ifnet *ifp, struct in_addr in)
 	struct in_ifaddr *ia;
 
 	IF_ADDR_RLOCK(ifp);
-	TAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
+	CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
 		if (ifa->ifa_addr->sa_family != AF_INET)
 			continue;
 		ia = (struct in_ifaddr *)ifa;
@@ -187,8 +189,8 @@ in_localip_more(struct in_ifaddr *ia)
 int
 in_canforward(struct in_addr in)
 {
-	register u_long i = ntohl(in.s_addr);
-	register u_long net;
+	u_long i = ntohl(in.s_addr);
+	u_long net;
 
 	if (IN_EXPERIMENTAL(i) || IN_MULTICAST(i) || IN_LINKLOCAL(i))
 		return (0);
@@ -206,8 +208,8 @@ in_canforward(struct in_addr in)
 static void
 in_socktrim(struct sockaddr_in *ap)
 {
-    register char *cplim = (char *) &ap->sin_addr;
-    register char *cp = (char *) (&ap->sin_addr + 1);
+    char *cplim = (char *) &ap->sin_addr;
+    char *cp = (char *) (&ap->sin_addr + 1);
 
     ap->sin_len = 0;
     while (--cp >= cplim)
@@ -245,7 +247,7 @@ in_control(struct socket *so, u_long cmd, caddr_t data, struct ifnet *ifp,
 		break;
 	case SIOCDIFADDR:
 		sx_xlock(&in_control_sx);
-		error = in_difaddr_ioctl(data, ifp, td);
+		error = in_difaddr_ioctl(cmd, data, ifp, td);
 		sx_xunlock(&in_control_sx);
 		return (error);
 	case OSIOCAIFADDR:	/* 9.x compat */
@@ -276,7 +278,7 @@ in_control(struct socket *so, u_long cmd, caddr_t data, struct ifnet *ifp,
 	 * first one on the interface, if possible.
 	 */
 	IF_ADDR_RLOCK(ifp);
-	TAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
+	CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
 		if (ifa->ifa_addr->sa_family != AF_INET)
 			continue;
 		ia = (struct in_ifaddr *)ifa;
@@ -284,7 +286,7 @@ in_control(struct socket *so, u_long cmd, caddr_t data, struct ifnet *ifp,
 			break;
 	}
 	if (ifa == NULL)
-		TAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link)
+		CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link)
 			if (ifa->ifa_addr->sa_family == AF_INET) {
 				ia = (struct in_ifaddr *)ifa;
 				if (prison_check_ip4(td->td_ucred,
@@ -375,7 +377,7 @@ in_aifaddr_ioctl(u_long cmd, caddr_t data, struct ifnet *ifp, struct thread *td)
 	iaIsFirst = true;
 	ia = NULL;
 	IF_ADDR_RLOCK(ifp);
-	TAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
+	CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
 		struct in_ifaddr *it;
 
 		if (ifa->ifa_addr->sa_family != AF_INET)
@@ -390,7 +392,7 @@ in_aifaddr_ioctl(u_long cmd, caddr_t data, struct ifnet *ifp, struct thread *td)
 	IF_ADDR_RUNLOCK(ifp);
 
 	if (ia != NULL)
-		(void )in_difaddr_ioctl(data, ifp, td);
+		(void )in_difaddr_ioctl(cmd, data, ifp, td);
 
 	ifa = ifa_alloc(sizeof(struct in_ifaddr), M_WAITOK);
 	ia = (struct in_ifaddr *)ifa;
@@ -453,12 +455,12 @@ in_aifaddr_ioctl(u_long cmd, caddr_t data, struct ifnet *ifp, struct thread *td)
 
 	/* if_addrhead is already referenced by ifa_alloc() */
 	IF_ADDR_WLOCK(ifp);
-	TAILQ_INSERT_TAIL(&ifp->if_addrhead, ifa, ifa_link);
+	CK_STAILQ_INSERT_TAIL(&ifp->if_addrhead, ifa, ifa_link);
 	IF_ADDR_WUNLOCK(ifp);
 
 	ifa_ref(ifa);			/* in_ifaddrhead */
 	IN_IFADDR_WLOCK();
-	TAILQ_INSERT_TAIL(&V_in_ifaddrhead, ia, ia_link);
+	CK_STAILQ_INSERT_TAIL(&V_in_ifaddrhead, ia, ia_link);
 	LIST_INSERT_HEAD(INADDR_HASH(ia->ia_addr.sin_addr.s_addr), ia, ia_hash);
 	IN_IFADDR_WUNLOCK();
 
@@ -528,15 +530,15 @@ fail2:
 
 fail1:
 	if (ia->ia_ifa.ifa_carp)
-		(*carp_detach_p)(&ia->ia_ifa);
+		(*carp_detach_p)(&ia->ia_ifa, false);
 
 	IF_ADDR_WLOCK(ifp);
-	TAILQ_REMOVE(&ifp->if_addrhead, &ia->ia_ifa, ifa_link);
+	CK_STAILQ_REMOVE(&ifp->if_addrhead, &ia->ia_ifa, ifaddr, ifa_link);
 	IF_ADDR_WUNLOCK(ifp);
 	ifa_free(&ia->ia_ifa);		/* if_addrhead */
 
 	IN_IFADDR_WLOCK();
-	TAILQ_REMOVE(&V_in_ifaddrhead, ia, ia_link);
+	CK_STAILQ_REMOVE(&V_in_ifaddrhead, ia, in_ifaddr, ia_link);
 	LIST_REMOVE(ia, ia_hash);
 	IN_IFADDR_WUNLOCK();
 	ifa_free(&ia->ia_ifa);		/* in_ifaddrhead */
@@ -545,7 +547,7 @@ fail1:
 }
 
 static int
-in_difaddr_ioctl(caddr_t data, struct ifnet *ifp, struct thread *td)
+in_difaddr_ioctl(u_long cmd, caddr_t data, struct ifnet *ifp, struct thread *td)
 {
 	const struct ifreq *ifr = (struct ifreq *)data;
 	const struct sockaddr_in *addr = (const struct sockaddr_in *)
@@ -570,7 +572,7 @@ in_difaddr_ioctl(caddr_t data, struct ifnet *ifp, struct thread *td)
 	iaIsLast = true;
 	ia = NULL;
 	IF_ADDR_WLOCK(ifp);
-	TAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
+	CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
 		struct in_ifaddr *it;
 
 		if (ifa->ifa_addr->sa_family != AF_INET)
@@ -595,12 +597,12 @@ in_difaddr_ioctl(caddr_t data, struct ifnet *ifp, struct thread *td)
 		return (EADDRNOTAVAIL);
 	}
 
-	TAILQ_REMOVE(&ifp->if_addrhead, &ia->ia_ifa, ifa_link);
+	CK_STAILQ_REMOVE(&ifp->if_addrhead, &ia->ia_ifa, ifaddr, ifa_link);
 	IF_ADDR_WUNLOCK(ifp);
 	ifa_free(&ia->ia_ifa);		/* if_addrhead */
 
 	IN_IFADDR_WLOCK();
-	TAILQ_REMOVE(&V_in_ifaddrhead, ia, ia_link);
+	CK_STAILQ_REMOVE(&V_in_ifaddrhead, ia, in_ifaddr, ia_link);
 	LIST_REMOVE(ia, ia_hash);
 	IN_IFADDR_WUNLOCK();
 
@@ -618,7 +620,8 @@ in_difaddr_ioctl(caddr_t data, struct ifnet *ifp, struct thread *td)
 	in_ifadown(&ia->ia_ifa, 1);
 
 	if (ia->ia_ifa.ifa_carp)
-		(*carp_detach_p)(&ia->ia_ifa);
+		(*carp_detach_p)(&ia->ia_ifa,
+		    (cmd == SIOCDIFADDR) ? false : true);
 
 	/*
 	 * If this is the last IPv4 address configured on this
@@ -629,12 +632,10 @@ in_difaddr_ioctl(caddr_t data, struct ifnet *ifp, struct thread *td)
 		struct in_ifinfo *ii;
 
 		ii = ((struct in_ifinfo *)ifp->if_afdata[AF_INET]);
-		IN_MULTI_LOCK();
 		if (ii->ii_allhosts) {
-			(void)in_leavegroup_locked(ii->ii_allhosts, NULL);
+			(void)in_leavegroup(ii->ii_allhosts, NULL);
 			ii->ii_allhosts = NULL;
 		}
-		IN_MULTI_UNLOCK();
 	}
 
 	IF_ADDR_WLOCK(ifp);
@@ -675,7 +676,7 @@ in_addprefix(struct in_ifaddr *target, int flags)
 
 	IN_IFADDR_RLOCK(&in_ifa_tracker);
 	/* Look for an existing address with the same prefix, mask, and fib */
-	TAILQ_FOREACH(ia, &V_in_ifaddrhead, ia_link) {
+	CK_STAILQ_FOREACH(ia, &V_in_ifaddrhead, ia_link) {
 		if (rtinitflags(ia)) {
 			p = ia->ia_dstaddr.sin_addr;
 
@@ -835,7 +836,7 @@ in_scrubprefix(struct in_ifaddr *target, u_int flags)
 	}
 
 	IN_IFADDR_RLOCK(&in_ifa_tracker);
-	TAILQ_FOREACH(ia, &V_in_ifaddrhead, ia_link) {
+	CK_STAILQ_FOREACH(ia, &V_in_ifaddrhead, ia_link) {
 		if (rtinitflags(ia)) {
 			p = ia->ia_dstaddr.sin_addr;
 
@@ -911,10 +912,10 @@ in_ifscrub_all(void)
 	struct ifaliasreq ifr;
 
 	IFNET_RLOCK();
-	TAILQ_FOREACH(ifp, &V_ifnet, if_link) {
+	CK_STAILQ_FOREACH(ifp, &V_ifnet, if_link) {
 		/* Cannot lock here - lock recursion. */
 		/* IF_ADDR_RLOCK(ifp); */
-		TAILQ_FOREACH_SAFE(ifa, &ifp->if_addrhead, ifa_link, nifa) {
+		CK_STAILQ_FOREACH_SAFE(ifa, &ifp->if_addrhead, ifa_link, nifa) {
 			if (ifa->ifa_addr->sa_family != AF_INET)
 				continue;
 
@@ -961,7 +962,7 @@ in_ifaddr_broadcast(struct in_addr in, struct in_ifaddr *ia)
 int
 in_broadcast(struct in_addr in, struct ifnet *ifp)
 {
-	register struct ifaddr *ifa;
+	struct ifaddr *ifa;
 	int found;
 
 	if (in.s_addr == INADDR_BROADCAST ||
@@ -975,7 +976,7 @@ in_broadcast(struct in_addr in, struct ifnet *ifp)
 	 * with a broadcast address.
 	 */
 	IF_ADDR_RLOCK(ifp);
-	TAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link)
+	CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link)
 		if (ifa->ifa_addr->sa_family == AF_INET &&
 		    in_ifaddr_broadcast(in, (struct in_ifaddr *)ifa)) {
 			found = 1;
@@ -991,11 +992,12 @@ in_broadcast(struct in_addr in, struct ifnet *ifp)
 void
 in_ifdetach(struct ifnet *ifp)
 {
-
+	IN_MULTI_LOCK();
 	in_pcbpurgeif0(&V_ripcbinfo, ifp);
 	in_pcbpurgeif0(&V_udbinfo, ifp);
 	in_pcbpurgeif0(&V_ulitecbinfo, ifp);
 	in_purgemaddrs(ifp);
+	IN_MULTI_UNLOCK();
 }
 
 /*
@@ -1008,12 +1010,12 @@ in_ifdetach(struct ifnet *ifp)
 static void
 in_purgemaddrs(struct ifnet *ifp)
 {
-	LIST_HEAD(,in_multi) purgeinms;
-	struct in_multi		*inm, *tinm;
-	struct ifmultiaddr	*ifma;
+	struct in_multi_head purgeinms;
+	struct in_multi		*inm;
+	struct ifmultiaddr	*ifma, *next;
 
-	LIST_INIT(&purgeinms);
-	IN_MULTI_LOCK();
+	SLIST_INIT(&purgeinms);
+	IN_MULTI_LIST_LOCK();
 
 	/*
 	 * Extract list of in_multi associated with the detaching ifp
@@ -1021,27 +1023,24 @@ in_purgemaddrs(struct ifnet *ifp)
 	 * We need to do this as IF_ADDR_LOCK() may be re-acquired
 	 * by code further down.
 	 */
-	IF_ADDR_RLOCK(ifp);
-	TAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link) {
+	IF_ADDR_WLOCK(ifp);
+ restart:
+	CK_STAILQ_FOREACH_SAFE(ifma, &ifp->if_multiaddrs, ifma_link, next) {
 		if (ifma->ifma_addr->sa_family != AF_INET ||
 		    ifma->ifma_protospec == NULL)
 			continue;
-#if 0
-		KASSERT(ifma->ifma_protospec != NULL,
-		    ("%s: ifma_protospec is NULL", __func__));
-#endif
 		inm = (struct in_multi *)ifma->ifma_protospec;
-		LIST_INSERT_HEAD(&purgeinms, inm, inm_link);
+		inm_rele_locked(&purgeinms, inm);
+		if (__predict_false(ifma_restart)) {
+			ifma_restart = true;
+			goto restart;
+		}
 	}
-	IF_ADDR_RUNLOCK(ifp);
+	IF_ADDR_WUNLOCK(ifp);
 
-	LIST_FOREACH_SAFE(inm, &purgeinms, inm_link, tinm) {
-		LIST_REMOVE(inm, inm_link);
-		inm_release_locked(inm);
-	}
+	inm_release_list_deferred(&purgeinms);
 	igmp_ifdetach(ifp);
-
-	IN_MULTI_UNLOCK();
+	IN_MULTI_LIST_UNLOCK();
 }
 
 struct in_llentry {
@@ -1056,12 +1055,27 @@ struct in_llentry {
  * Do actual deallocation of @lle.
  */
 static void
-in_lltable_destroy_lle_unlocked(struct llentry *lle)
+in_lltable_destroy_lle_unlocked(epoch_context_t ctx)
 {
+	struct llentry *lle;
 
+	lle = __containerof(ctx, struct llentry, lle_epoch_ctx);
 	LLE_LOCK_DESTROY(lle);
 	LLE_REQ_DESTROY(lle);
 	free(lle, M_LLTABLE);
+}
+
+/*
+ * Called by the datapath to indicate that
+ * the entry was used.
+ */
+static void
+in_lltable_mark_used(struct llentry *lle)
+{
+
+	LLE_REQ_LOCK(lle);
+	lle->r_skip_req = 0;
+	LLE_REQ_UNLOCK(lle);
 }
 
 /*
@@ -1073,7 +1087,7 @@ in_lltable_destroy_lle(struct llentry *lle)
 {
 
 	LLE_WUNLOCK(lle);
-	in_lltable_destroy_lle_unlocked(lle);
+	epoch_call(net_epoch_preempt,  &lle->lle_epoch_ctx, in_lltable_destroy_lle_unlocked);
 }
 
 static struct llentry *
@@ -1140,7 +1154,6 @@ in_lltable_match_prefix(const struct sockaddr *saddr,
 static void
 in_lltable_free_entry(struct lltable *llt, struct llentry *lle)
 {
-	struct ifnet *ifp;
 	size_t pkts_dropped;
 
 	LLE_WLOCK_ASSERT(lle);
@@ -1148,8 +1161,7 @@ in_lltable_free_entry(struct lltable *llt, struct llentry *lle)
 
 	/* Unlink entry from table if not already */
 	if ((lle->la_flags & LLE_LINKED) != 0) {
-		ifp = llt->llt_ifp;
-		IF_AFDATA_WLOCK_ASSERT(ifp);
+		IF_AFDATA_WLOCK_ASSERT(llt->llt_ifp);
 		lltable_unlink_entry(llt, lle);
 	}
 
@@ -1217,7 +1229,7 @@ in_lltable_rtcheck(struct ifnet *ifp, u_int flags, const struct sockaddr *l3addr
 	 */
 	if (!(rt_flags & RTF_HOST) && info.rti_ifp != ifp) {
 		const char *sa, *mask, *addr, *lim;
-		int len;
+		const struct sockaddr_in *l3sin;
 
 		mask = (const char *)&rt_mask;
 		/*
@@ -1229,14 +1241,17 @@ in_lltable_rtcheck(struct ifnet *ifp, u_int flags, const struct sockaddr *l3addr
 
 		sa = (const char *)&rt_key;
 		addr = (const char *)l3addr;
-		len = ((const struct sockaddr_in *)l3addr)->sin_len;
-		lim = addr + len;
+		l3sin = (const struct sockaddr_in *)l3addr;
+		lim = addr + l3sin->sin_len;
 
 		for ( ; addr < lim; sa++, mask++, addr++) {
 			if ((*sa ^ *addr) & *mask) {
 #ifdef DIAGNOSTIC
-				log(LOG_INFO, "IPv4 address: \"%s\" is not on the network\n",
-				    inet_ntoa(((const struct sockaddr_in *)l3addr)->sin_addr));
+				char addrbuf[INET_ADDRSTRLEN];
+
+				log(LOG_INFO, "IPv4 address: \"%s\" "
+				    "is not on the network\n",
+				    inet_ntoa_r(l3sin->sin_addr, addrbuf));
 #endif
 				return (EINVAL);
 			}
@@ -1281,7 +1296,7 @@ in_lltable_find_dst(struct lltable *llt, struct in_addr dst)
 
 	hashidx = in_lltable_hash_dst(dst, llt->llt_hsize);
 	lleh = &llt->lle_head[hashidx];
-	LIST_FOREACH(lle, lleh, lle_next) {
+	CK_LIST_FOREACH(lle, lleh, lle_next) {
 		if (lle->la_flags & LLE_DELETED)
 			continue;
 		if (lle->r_l3addr.addr4.s_addr == dst.s_addr)
@@ -1337,7 +1352,7 @@ in_lltable_alloc(struct lltable *llt, u_int flags, const struct sockaddr *l3addr
 		linkhdrsize = LLE_MAX_LINKHDR;
 		if (lltable_calc_llheader(ifp, AF_INET, IF_LLADDR(ifp),
 		    linkhdr, &linkhdrsize, &lladdr_off) != 0) {
-			in_lltable_destroy_lle_unlocked(lle);
+			epoch_call(net_epoch_preempt,  &lle->lle_epoch_ctx, in_lltable_destroy_lle_unlocked);
 			return (NULL);
 		}
 		lltable_set_entry_addr(ifp, lle, linkhdr, linkhdrsize,
@@ -1397,52 +1412,51 @@ in_lltable_dump_entry(struct lltable *llt, struct llentry *lle,
 	int error;
 
 	bzero(&arpc, sizeof(arpc));
-			/* skip deleted entries */
-			if ((lle->la_flags & LLE_DELETED) == LLE_DELETED)
-				return (0);
-			/* Skip if jailed and not a valid IP of the prison. */
-			lltable_fill_sa_entry(lle,(struct sockaddr *)&arpc.sin);
-			if (prison_if(wr->td->td_ucred,
-			    (struct sockaddr *)&arpc.sin) != 0)
-				return (0);
-			/*
-			 * produce a msg made of:
-			 *  struct rt_msghdr;
-			 *  struct sockaddr_in; (IPv4)
-			 *  struct sockaddr_dl;
-			 */
-			arpc.rtm.rtm_msglen = sizeof(arpc);
-			arpc.rtm.rtm_version = RTM_VERSION;
-			arpc.rtm.rtm_type = RTM_GET;
-			arpc.rtm.rtm_flags = RTF_UP;
-			arpc.rtm.rtm_addrs = RTA_DST | RTA_GATEWAY;
+	/* skip deleted entries */
+	if ((lle->la_flags & LLE_DELETED) == LLE_DELETED)
+		return (0);
+	/* Skip if jailed and not a valid IP of the prison. */
+	lltable_fill_sa_entry(lle,(struct sockaddr *)&arpc.sin);
+	if (prison_if(wr->td->td_ucred, (struct sockaddr *)&arpc.sin) != 0)
+		return (0);
+	/*
+	 * produce a msg made of:
+	 *  struct rt_msghdr;
+	 *  struct sockaddr_in; (IPv4)
+	 *  struct sockaddr_dl;
+	 */
+	arpc.rtm.rtm_msglen = sizeof(arpc);
+	arpc.rtm.rtm_version = RTM_VERSION;
+	arpc.rtm.rtm_type = RTM_GET;
+	arpc.rtm.rtm_flags = RTF_UP;
+	arpc.rtm.rtm_addrs = RTA_DST | RTA_GATEWAY;
 
-			/* publish */
-			if (lle->la_flags & LLE_PUB)
-				arpc.rtm.rtm_flags |= RTF_ANNOUNCE;
+	/* publish */
+	if (lle->la_flags & LLE_PUB)
+		arpc.rtm.rtm_flags |= RTF_ANNOUNCE;
 
-			sdl = &arpc.sdl;
-			sdl->sdl_family = AF_LINK;
-			sdl->sdl_len = sizeof(*sdl);
-			sdl->sdl_index = ifp->if_index;
-			sdl->sdl_type = ifp->if_type;
-			if ((lle->la_flags & LLE_VALID) == LLE_VALID) {
-				sdl->sdl_alen = ifp->if_addrlen;
-				bcopy(lle->ll_addr, LLADDR(sdl), ifp->if_addrlen);
-			} else {
-				sdl->sdl_alen = 0;
-				bzero(LLADDR(sdl), ifp->if_addrlen);
-			}
+	sdl = &arpc.sdl;
+	sdl->sdl_family = AF_LINK;
+	sdl->sdl_len = sizeof(*sdl);
+	sdl->sdl_index = ifp->if_index;
+	sdl->sdl_type = ifp->if_type;
+	if ((lle->la_flags & LLE_VALID) == LLE_VALID) {
+		sdl->sdl_alen = ifp->if_addrlen;
+		bcopy(lle->ll_addr, LLADDR(sdl), ifp->if_addrlen);
+	} else {
+		sdl->sdl_alen = 0;
+		bzero(LLADDR(sdl), ifp->if_addrlen);
+	}
 
-			arpc.rtm.rtm_rmx.rmx_expire =
-			    lle->la_flags & LLE_STATIC ? 0 : lle->la_expire;
-			arpc.rtm.rtm_flags |= (RTF_HOST | RTF_LLDATA);
-			if (lle->la_flags & LLE_STATIC)
-				arpc.rtm.rtm_flags |= RTF_STATIC;
-			if (lle->la_flags & LLE_IFADDR)
-				arpc.rtm.rtm_flags |= RTF_PINNED;
-			arpc.rtm.rtm_index = ifp->if_index;
-			error = SYSCTL_OUT(wr, &arpc, sizeof(arpc));
+	arpc.rtm.rtm_rmx.rmx_expire =
+	    lle->la_flags & LLE_STATIC ? 0 : lle->la_expire;
+	arpc.rtm.rtm_flags |= (RTF_HOST | RTF_LLDATA);
+	if (lle->la_flags & LLE_STATIC)
+		arpc.rtm.rtm_flags |= RTF_STATIC;
+	if (lle->la_flags & LLE_IFADDR)
+		arpc.rtm.rtm_flags |= RTF_PINNED;
+	arpc.rtm.rtm_index = ifp->if_index;
+	error = SYSCTL_OUT(wr, &arpc, sizeof(arpc));
 
 	return (error);
 }
@@ -1464,6 +1478,7 @@ in_lltattach(struct ifnet *ifp)
 	llt->llt_fill_sa_entry = in_lltable_fill_sa_entry;
 	llt->llt_free_entry = in_lltable_free_entry;
 	llt->llt_match_prefix = in_lltable_match_prefix;
+	llt->llt_mark_used = in_lltable_mark_used;
  	lltable_link(llt);
 
 	return (llt);

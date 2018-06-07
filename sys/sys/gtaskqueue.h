@@ -1,6 +1,8 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2014 Jeffrey Roberson <jeff@freebsd.org>
- * Copyright (c) 2016 Matthew Macy <mmacy@nextbsd.org>
+ * Copyright (c) 2016 Matthew Macy <mmacy@mattmacy.io>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -32,7 +34,7 @@
 #include <sys/taskqueue.h>
 
 #ifndef _KERNEL
-#error "no user-servicable parts inside"
+#error "no user-serviceable parts inside"
 #endif
 
 struct gtaskqueue;
@@ -52,13 +54,16 @@ void	gtaskqueue_drain_all(struct gtaskqueue *queue);
 
 int grouptaskqueue_enqueue(struct gtaskqueue *queue, struct gtask *task);
 void	taskqgroup_attach(struct taskqgroup *qgroup, struct grouptask *grptask,
-	    void *uniq, int irq, char *name);
+	    void *uniq, int irq, const char *name);
 int		taskqgroup_attach_cpu(struct taskqgroup *qgroup, struct grouptask *grptask,
-		void *uniq, int cpu, int irq, char *name);
+		void *uniq, int cpu, int irq, const char *name);
 void	taskqgroup_detach(struct taskqgroup *qgroup, struct grouptask *gtask);
-struct taskqgroup *taskqgroup_create(char *name);
+struct taskqgroup *taskqgroup_create(const char *name);
 void	taskqgroup_destroy(struct taskqgroup *qgroup);
 int	taskqgroup_adjust(struct taskqgroup *qgroup, int cnt, int stride);
+void	taskqgroup_config_gtask_init(void *ctx, struct grouptask *gtask, gtask_fn_t *fn,
+		const char *name);
+void	taskqgroup_config_gtask_deinit(struct grouptask *gtask);
 
 #define TASK_ENQUEUED			0x1
 #define TASK_SKIP_WAKEUP		0x2
@@ -80,22 +85,6 @@ int	taskqgroup_adjust(struct taskqgroup *qgroup, int cnt, int stride);
 #define TASKQGROUP_DECLARE(name)			\
 extern struct taskqgroup *qgroup_##name
 
-
-#ifdef EARLY_AP_STARTUP
-#define TASKQGROUP_DEFINE(name, cnt, stride)				\
-									\
-struct taskqgroup *qgroup_##name;					\
-									\
-static void								\
-taskqgroup_define_##name(void *arg)					\
-{									\
-	qgroup_##name = taskqgroup_create(#name);			\
-	taskqgroup_adjust(qgroup_##name, (cnt), (stride));		\
-}									\
-									\
-SYSINIT(taskqgroup_##name, SI_SUB_INIT_IF, SI_ORDER_FIRST,		\
-	taskqgroup_define_##name, NULL)
-#else
 #define TASKQGROUP_DEFINE(name, cnt, stride)				\
 									\
 struct taskqgroup *qgroup_##name;					\
@@ -106,7 +95,7 @@ taskqgroup_define_##name(void *arg)					\
 	qgroup_##name = taskqgroup_create(#name);			\
 }									\
 									\
-SYSINIT(taskqgroup_##name, SI_SUB_INIT_IF, SI_ORDER_FIRST,		\
+SYSINIT(taskqgroup_##name, SI_SUB_TASKQ, SI_ORDER_FIRST,		\
 	taskqgroup_define_##name, NULL);				\
 									\
 static void								\
@@ -116,10 +105,9 @@ taskqgroup_adjust_##name(void *arg)					\
 }									\
 									\
 SYSINIT(taskqgroup_adj_##name, SI_SUB_SMP, SI_ORDER_ANY,		\
-	taskqgroup_adjust_##name, NULL);				\
-									\
-struct __hack
-#endif
+	taskqgroup_adjust_##name, NULL)
+
 TASKQGROUP_DECLARE(net);
+TASKQGROUP_DECLARE(softirq);
 
 #endif /* !_SYS_GTASKQUEUE_H_ */

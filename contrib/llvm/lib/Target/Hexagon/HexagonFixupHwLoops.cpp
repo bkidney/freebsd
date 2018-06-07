@@ -12,16 +12,15 @@
 // form.
 //===----------------------------------------------------------------------===//
 
-
-#include "llvm/ADT/DenseMap.h"
 #include "Hexagon.h"
 #include "HexagonTargetMachine.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/Passes.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/PassSupport.h"
-#include "llvm/Target/TargetInstrInfo.h"
 
 using namespace llvm;
 
@@ -47,10 +46,10 @@ namespace {
 
     MachineFunctionProperties getRequiredProperties() const override {
       return MachineFunctionProperties().set(
-          MachineFunctionProperties::Property::AllVRegsAllocated);
+          MachineFunctionProperties::Property::NoVRegs);
     }
 
-    const char *getPassName() const override {
+    StringRef getPassName() const override {
       return "Hexagon Hardware Loop Fixup";
     }
 
@@ -90,7 +89,7 @@ static bool isHardwareLoop(const MachineInstr &MI) {
 }
 
 bool HexagonFixupHwLoops::runOnMachineFunction(MachineFunction &MF) {
-  if (skipFunction(*MF.getFunction()))
+  if (skipFunction(MF.getFunction()))
     return false;
   return fixupLoopInstrs(MF);
 }
@@ -125,7 +124,7 @@ bool HexagonFixupHwLoops::fixupLoopInstrs(MachineFunction &MF) {
 
     BlockToInstOffset[&MBB] = InstOffset;
     for (const MachineInstr &MI : MBB)
-      InstOffset += HII->getSize(&MI);
+      InstOffset += HII->getSize(MI);
   }
 
   // Second pass - check each loop instruction to see if it needs to be
@@ -138,8 +137,8 @@ bool HexagonFixupHwLoops::fixupLoopInstrs(MachineFunction &MF) {
     MachineBasicBlock::iterator MII = MBB.begin();
     MachineBasicBlock::iterator MIE = MBB.end();
     while (MII != MIE) {
-      InstOffset += HII->getSize(&*MII);
-      if (MII->isDebugValue()) {
+      InstOffset += HII->getSize(*MII);
+      if (MII->isMetaInstruction()) {
         ++MII;
         continue;
       }
@@ -190,5 +189,5 @@ void HexagonFixupHwLoops::useExtLoopInstr(MachineFunction &MF,
   MIB = BuildMI(*MBB, MII, DL, TII->get(newOp));
 
   for (unsigned i = 0; i < MII->getNumOperands(); ++i)
-    MIB.addOperand(MII->getOperand(i));
+    MIB.add(MII->getOperand(i));
 }

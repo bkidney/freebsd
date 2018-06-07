@@ -35,6 +35,7 @@
  * This code suppose ADM6996FC SDC/SDIO connect to SOC network interface
  * MDC/MDIO.
  * This code development on Netgear WGR614Cv7.
+ * etherswitchcfg command port option support addtag.
  */
 
 #include <sys/param.h>
@@ -174,6 +175,12 @@ adm6996fc_attach_phys(struct adm6996fc_softc *sc)
 		sc->ifpport[phy] = port;
 		sc->portphy[port] = phy;
 		sc->ifp[port] = if_alloc(IFT_ETHER);
+		if (sc->ifp[port] == NULL) {
+			device_printf(sc->sc_dev, "couldn't allocate ifnet structure\n");
+			err = ENOMEM;
+			break;
+		}
+
 		sc->ifp[port]->if_softc = sc;
 		sc->ifp[port]->if_flags |= IFF_UP | IFF_BROADCAST |
 		    IFF_DRV_RUNNING | IFF_SIMPLEX;
@@ -462,8 +469,6 @@ adm6996fc_getport(device_t dev, etherswitch_port_t *p)
 		p->es_pvid = ADM6996FC_PVIDBYDATA(data1, data2);
 		if (((data1 >> ADM6996FC_OPTE_SHIFT) & 0x01) == 1)
 			p->es_flags |= ETHERSWITCH_PORT_ADDTAG;
-		else
-			p->es_flags |= ETHERSWITCH_PORT_STRIPTAG;
 	} else {
 		p->es_pvid = 0;
 	}
@@ -517,6 +522,10 @@ adm6996fc_setport(device_t dev, etherswitch_port_t *p)
 		data = ADM6996FC_READREG(parent, bcaddr[p->es_port]);
 		data &= ~(0xf << 10);
 		data |= (p->es_pvid & 0xf) << ADM6996FC_PVID_SHIFT;
+		if (p->es_flags & ETHERSWITCH_PORT_ADDTAG)
+			data |= 1 << ADM6996FC_OPTE_SHIFT;
+		else
+			data &= ~(1 << ADM6996FC_OPTE_SHIFT);
 		ADM6996FC_WRITEREG(parent, bcaddr[p->es_port], data);
 		data = ADM6996FC_READREG(parent, vidaddr[p->es_port]);
 		/* only port 4 is hi bit */
@@ -670,9 +679,6 @@ adm6996fc_setconf(device_t dev, etherswitch_conf_t *conf)
 			/* Private VID set 1 */
 			data &= ~(0xf << 10);
 			data |= (1 << 10);
-			/* Output Packet Tagging Enable */
-			if (i == 5)
-				data |= (1 << 4);
 			ADM6996FC_WRITEREG(parent, bcaddr[i], data);
 		}
 		for (i = 2;i <= 15; ++i) {

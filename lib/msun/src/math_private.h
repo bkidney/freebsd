@@ -294,8 +294,9 @@ do {								\
 
 /* Support switching the mode to FP_PE if necessary. */
 #if defined(__i386__) && !defined(NO_FPSETPREC)
-#define	ENTERI()				\
-	long double __retval;			\
+#define	ENTERI() ENTERIT(long double)
+#define	ENTERIT(returntype)			\
+	returntype __retval;			\
 	fp_prec_t __oprec;			\
 						\
 	if ((__oprec = fpgetprec()) != FP_PE)	\
@@ -306,9 +307,22 @@ do {								\
 		fpsetprec(__oprec);		\
 	RETURNF(__retval);			\
 } while (0)
+#define	ENTERV()				\
+	fp_prec_t __oprec;			\
+						\
+	if ((__oprec = fpgetprec()) != FP_PE)	\
+		fpsetprec(FP_PE)
+#define	RETURNV() do {				\
+	if (__oprec != FP_PE)			\
+		fpsetprec(__oprec);		\
+	return;			\
+} while (0)
 #else
-#define	ENTERI(x)
+#define	ENTERI()
+#define	ENTERIT(x)
 #define	RETURNI(x)	RETURNF(x)
+#define	ENTERV()
+#define	RETURNV()	return
 #endif
 
 /* Default return statement if hack*_t() is not used. */

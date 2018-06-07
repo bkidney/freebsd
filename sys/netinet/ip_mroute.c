@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1989 Stephen Deering
  * Copyright (c) 1992, 1993
  *      The Regents of the University of California.  All rights reserved.
@@ -14,7 +16,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -240,20 +242,17 @@ SYSCTL_ULONG(_net_inet_pim, OID_AUTO, squelch_wholepkt, CTLFLAG_RW,
     &pim_squelch_wholepkt, 0,
     "Disable IGMP_WHOLEPKT notifications if rendezvous point is unspecified");
 
-extern  struct domain inetdomain;
-static const struct protosw in_pim_protosw = {
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_PIM,
-	.pr_flags =		PR_ATOMIC|PR_ADDR|PR_LASTHDR,
-	.pr_input =		pim_input,
-	.pr_output =		rip_output,
-	.pr_ctloutput =		rip_ctloutput,
-	.pr_usrreqs =		&rip_usrreqs
-};
 static const struct encaptab *pim_encap_cookie;
-
 static int pim_encapcheck(const struct mbuf *, int, int, void *);
+static int pim_input(struct mbuf *, int, int, void *);
+
+static const struct encap_config ipv4_encap_cfg = {
+	.proto = IPPROTO_PIM,
+	.min_length = sizeof(struct ip) + PIM_MINLEN,
+	.exact_match = 8,
+	.check = pim_encapcheck,
+	.input = pim_input
+};
 
 /*
  * Note: the PIM Register encapsulation adds the following in front of a
@@ -876,13 +875,15 @@ add_vif(struct vifctl *vifcp)
 	ifp = NULL;
     } else {
 	sin.sin_addr = vifcp->vifc_lcl_addr;
+	NET_EPOCH_ENTER();
 	ifa = ifa_ifwithaddr((struct sockaddr *)&sin);
 	if (ifa == NULL) {
+		NET_EPOCH_EXIT();
 	    VIF_UNLOCK();
 	    return EADDRNOTAVAIL;
 	}
 	ifp = ifa->ifa_ifp;
-	ifa_free(ifa);
+	NET_EPOCH_EXIT();
     }
 
     if ((vifcp->vifc_flags & VIFF_TUNNEL) != 0) {
@@ -928,8 +929,8 @@ add_vif(struct vifctl *vifcp)
 
     VIF_UNLOCK();
 
-    CTR4(KTR_IPMF, "%s: add vif %d laddr %s thresh %x", __func__,
-	(int)vifcp->vifc_vifi, inet_ntoa(vifcp->vifc_lcl_addr),
+    CTR4(KTR_IPMF, "%s: add vif %d laddr 0x%08x thresh %x", __func__,
+	(int)vifcp->vifc_vifi, ntohl(vifcp->vifc_lcl_addr.s_addr),
 	(int)vifcp->vifc_threshold);
 
     return 0;
@@ -1060,8 +1061,8 @@ add_mfc(struct mfcctl2 *mfccp)
 
     /* If an entry already exists, just update the fields */
     if (rt) {
-	CTR4(KTR_IPMF, "%s: update mfc orig %s group %lx parent %x",
-	    __func__, inet_ntoa(mfccp->mfcc_origin),
+	CTR4(KTR_IPMF, "%s: update mfc orig 0x%08x group %lx parent %x",
+	    __func__, ntohl(mfccp->mfcc_origin.s_addr),
 	    (u_long)ntohl(mfccp->mfcc_mcastgrp.s_addr),
 	    mfccp->mfcc_parent);
 	update_mfc_params(rt, mfccp);
@@ -1080,8 +1081,8 @@ add_mfc(struct mfcctl2 *mfccp)
 	    in_hosteq(rt->mfc_mcastgrp, mfccp->mfcc_mcastgrp) &&
 	    !TAILQ_EMPTY(&rt->mfc_stall)) {
 		CTR5(KTR_IPMF,
-		    "%s: add mfc orig %s group %lx parent %x qh %p",
-		    __func__, inet_ntoa(mfccp->mfcc_origin),
+		    "%s: add mfc orig 0x%08x group %lx parent %x qh %p",
+		    __func__, ntohl(mfccp->mfcc_origin.s_addr),
 		    (u_long)ntohl(mfccp->mfcc_mcastgrp.s_addr),
 		    mfccp->mfcc_parent,
 		    TAILQ_FIRST(&rt->mfc_stall));
@@ -1159,8 +1160,8 @@ del_mfc(struct mfcctl2 *mfccp)
     origin = mfccp->mfcc_origin;
     mcastgrp = mfccp->mfcc_mcastgrp;
 
-    CTR3(KTR_IPMF, "%s: delete mfc orig %s group %lx", __func__,
-	inet_ntoa(origin), (u_long)ntohl(mcastgrp.s_addr));
+    CTR3(KTR_IPMF, "%s: delete mfc orig 0x%08x group %lx", __func__,
+	ntohl(origin.s_addr), (u_long)ntohl(mcastgrp.s_addr));
 
     MFC_LOCK();
 
@@ -1224,8 +1225,8 @@ X_ip_mforward(struct ip *ip, struct ifnet *ifp, struct mbuf *m,
     int error;
     vifi_t vifi;
 
-    CTR3(KTR_IPMF, "ip_mforward: delete mfc orig %s group %lx ifp %p",
-	inet_ntoa(ip->ip_src), (u_long)ntohl(ip->ip_dst.s_addr), ifp);
+    CTR3(KTR_IPMF, "ip_mforward: delete mfc orig 0x%08x group %lx ifp %p",
+	ntohl(ip->ip_src.s_addr), (u_long)ntohl(ip->ip_dst.s_addr), ifp);
 
     if (ip->ip_hl < (sizeof(struct ip) + TUNNEL_LEN) >> 2 ||
 		((u_char *)(ip + 1))[1] != IPOPT_LSRR ) {
@@ -1287,8 +1288,8 @@ X_ip_mforward(struct ip *ip, struct ifnet *ifp, struct mbuf *m,
 
 	MRTSTAT_INC(mrts_mfc_misses);
 	MRTSTAT_INC(mrts_no_route);
-	CTR2(KTR_IPMF, "ip_mforward: no mfc for (%s,%lx)",
-	    inet_ntoa(ip->ip_src), (u_long)ntohl(ip->ip_dst.s_addr));
+	CTR2(KTR_IPMF, "ip_mforward: no mfc for (0x%08x,%lx)",
+	    ntohl(ip->ip_src.s_addr), (u_long)ntohl(ip->ip_dst.s_addr));
 
 	/*
 	 * Allocate mbufs early so that we don't do extra work if we are
@@ -1678,7 +1679,7 @@ send_packet(struct vif *vifp, struct mbuf *m)
 {
 	struct ip_moptions imo;
 	struct in_multi *imm[2];
-	int error;
+	int error __unused;
 
 	VIF_LOCK_ASSERT();
 
@@ -2540,16 +2541,12 @@ pim_register_send_rp(struct ip *ip, struct vif *vifp, struct mbuf *mb_copy,
  * into the kernel.
  */
 static int
-pim_encapcheck(const struct mbuf *m, int off, int proto, void *arg)
+pim_encapcheck(const struct mbuf *m __unused, int off __unused,
+    int proto __unused, void *arg __unused)
 {
 
-#ifdef DIAGNOSTIC
     KASSERT(proto == IPPROTO_PIM, ("not for IPPROTO_PIM"));
-#endif
-    if (proto != IPPROTO_PIM)
-	return 0;	/* not for us; reject the datagram. */
-
-    return 64;		/* claim the datagram. */
+    return (8);		/* claim the datagram. */
 }
 
 /*
@@ -2560,18 +2557,15 @@ pim_encapcheck(const struct mbuf *m, int off, int proto, void *arg)
  * (used by PIM-SM): the PIM header is stripped off, and the inner packet
  * is passed to if_simloop().
  */
-int
-pim_input(struct mbuf **mp, int *offp, int proto)
+static int
+pim_input(struct mbuf *m, int off, int proto, void *arg __unused)
 {
-    struct mbuf *m = *mp;
     struct ip *ip = mtod(m, struct ip *);
     struct pim *pim;
-    int iphlen = *offp;
+    int iphlen = off;
     int minlen;
     int datalen = ntohs(ip->ip_len) - iphlen;
     int ip_tos;
-
-    *mp = NULL;
 
     /* Keep statistics */
     PIMSTAT_INC(pims_rcv_total_msgs);
@@ -2582,8 +2576,8 @@ pim_input(struct mbuf **mp, int *offp, int proto)
      */
     if (datalen < PIM_MINLEN) {
 	PIMSTAT_INC(pims_rcv_tooshort);
-	CTR3(KTR_IPMF, "%s: short packet (%d) from %s",
-	    __func__, datalen, inet_ntoa(ip->ip_src));
+	CTR3(KTR_IPMF, "%s: short packet (%d) from 0x%08x",
+	    __func__, datalen, ntohl(ip->ip_src.s_addr));
 	m_freem(m);
 	return (IPPROTO_DONE);
     }
@@ -2682,8 +2676,9 @@ pim_input(struct mbuf **mp, int *offp, int proto)
 	reghdr = (u_int32_t *)(pim + 1);
 	encap_ip = (struct ip *)(reghdr + 1);
 
-	CTR3(KTR_IPMF, "%s: register: encap ip src %s len %d",
-	    __func__, inet_ntoa(encap_ip->ip_src), ntohs(encap_ip->ip_len));
+	CTR3(KTR_IPMF, "%s: register: encap ip src 0x%08x len %d",
+	    __func__, ntohl(encap_ip->ip_src.s_addr),
+	    ntohs(encap_ip->ip_len));
 
 	/* verify the version number of the inner packet */
 	if (encap_ip->ip_v != IPVERSION) {
@@ -2696,8 +2691,8 @@ pim_input(struct mbuf **mp, int *offp, int proto)
 	/* verify the inner packet is destined to a mcast group */
 	if (!IN_MULTICAST(ntohl(encap_ip->ip_dst.s_addr))) {
 	    PIMSTAT_INC(pims_rcv_badregisters);
-	    CTR2(KTR_IPMF, "%s: bad encap ip dest %s", __func__,
-		inet_ntoa(encap_ip->ip_dst));
+	    CTR2(KTR_IPMF, "%s: bad encap ip dest 0x%08x", __func__,
+		ntohl(encap_ip->ip_dst.s_addr));
 	    m_freem(m);
 	    return (IPPROTO_DONE);
 	}
@@ -2774,10 +2769,7 @@ pim_input_to_daemon:
      * XXX: the outer IP header pkt size of a Register is not adjust to
      * reflect the fact that the inner multicast data is truncated.
      */
-    *mp = m;
-    rip_input(mp, offp, proto);
-
-    return (IPPROTO_DONE);
+    return (rip_input(&m, &off, proto));
 }
 
 static int
@@ -2815,7 +2807,7 @@ static void
 vnet_mroute_init(const void *unused __unused)
 {
 
-	MALLOC(V_nexpire, u_char *, mfchashsize, M_MRTABLE, M_WAITOK|M_ZERO);
+	V_nexpire = malloc(mfchashsize, M_MRTABLE, M_WAITOK|M_ZERO);
 	bzero(V_bw_meter_timers, sizeof(V_bw_meter_timers));
 	callout_init(&V_expire_upcalls_ch, 1);
 	callout_init(&V_bw_upcalls_ch, 1);
@@ -2829,7 +2821,7 @@ static void
 vnet_mroute_uninit(const void *unused __unused)
 {
 
-	FREE(V_nexpire, M_MRTABLE);
+	free(V_nexpire, M_MRTABLE);
 	V_nexpire = NULL;
 }
 
@@ -2868,8 +2860,7 @@ ip_mroute_modevent(module_t mod, int type, void *unused)
 	TUNABLE_ULONG_FETCH("net.inet.pim.squelch_wholepkt",
 	    &pim_squelch_wholepkt);
 
-	pim_encap_cookie = encap_attach_func(AF_INET, IPPROTO_PIM,
-	    pim_encapcheck, &in_pim_protosw, NULL);
+	pim_encap_cookie = ip_encap_attach(&ipv4_encap_cfg, NULL, M_WAITOK);
 	if (pim_encap_cookie == NULL) {
 		printf("ip_mroute: unable to attach pim encap\n");
 		VIF_LOCK_DESTROY();
@@ -2912,7 +2903,7 @@ ip_mroute_modevent(module_t mod, int type, void *unused)
 	EVENTHANDLER_DEREGISTER(ifnet_departure_event, if_detach_event_tag);
 
 	if (pim_encap_cookie) {
-	    encap_detach(pim_encap_cookie);
+	    ip_encap_detach(pim_encap_cookie);
 	    pim_encap_cookie = NULL;
 	}
 

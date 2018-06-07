@@ -1,6 +1,6 @@
 # Chelsio T6 Factory Default configuration file.
 #
-# Copyright (C) 2014-2016 Chelsio Communications.  All rights reserved.
+# Copyright (C) 2014-2015 Chelsio Communications.  All rights reserved.
 #
 #   DO NOT MODIFY THIS FILE UNDER ANY CIRCUMSTANCES.  MODIFICATION OF THIS FILE
 #   WILL RESULT IN A NON-FUNCTIONAL ADAPTER AND MAY RESULT IN PHYSICAL DAMAGE
@@ -79,7 +79,7 @@
 	#     The firmware will convert these values to Core Clock Ticks when
 	#     it processes the configuration parameters.
 	#
-	reg[0x1008] = 0x40810/0x21c70	# SGE_CONTROL
+	reg[0x1008] = 0x40800/0x21c70	# SGE_CONTROL
 	reg[0x100c] = 0x22222222	# SGE_HOST_PAGE_SIZE
 	reg[0x10a0] = 0x01040810	# SGE_INGRESS_RX_THRESHOLD
 	reg[0x1044] = 4096		# SGE_FL_BUFFER_SIZE0
@@ -91,8 +91,7 @@
 	reg[0x105c] = 128		# SGE_FL_BUFFER_SIZE6
 	reg[0x1060] = 8192		# SGE_FL_BUFFER_SIZE7
 	reg[0x1064] = 16384		# SGE_FL_BUFFER_SIZE8
-	reg[0x10a4] = 0xa000a000/0xf000f000 # SGE_DBFIFO_STATUS
-	reg[0x10a8] = 0x402000/0x402000	# SGE_DOORBELL_CONTROL
+
 	sge_timer_value = 5, 10, 20, 50, 100, 200 # SGE_TIMER_VALUE* in usecs
 	reg[0x10c4] = 0x20000000/0x20000000 # GK_CONTROL, enable 5th thread
 
@@ -110,6 +109,7 @@
 	# filter tuples : fragmentation, mpshittype, macmatch, ethertype,
 	#		  protocol, tos, vlan, vnic_id, port, fcoe
 	# valid filterModes are described the Terminator 5 Data Book
+	# vnicMode = pf_vf  #default. Other values are outer_vlan, encapsulation
 	filterMode = fcoemask, srvrsram, fragmentation, mpshittype, protocol, vlan, port, fcoe
 
 	# filter tuples enforced in LE active region (equal to or subset of filterMode)
@@ -150,6 +150,9 @@
 	# TP_PARA_REG0
 	reg[0x7d60] = 0x06000000/0x07000000 # set InitCWND to 6
 
+	# ULPRX iSCSI Page Sizes
+	reg[0x19168] = 0x04020100 # 64K, 16K, 8K and 4K
+
 	# LE_DB_CONFIG
 	reg[0x19c04] = 0x00000000/0x00440000 # LE Server SRAM disabled
 					     # LE IPv4 compression disabled 
@@ -177,7 +180,11 @@
 						# iscsi force cmd mode.
 						# Enable iscsi cmp mode.
 	# MC configuration
-	#mc_mode_brc[0] = 1		# mc0 - 1: enable BRC, 0: enable RBC
+	#mc_mode_brc[0] = 1		# mc0 - 1: enable BRC, 0: enable RBC, 2: enable BRBC
+
+	# HMA configuration
+	hma_size = 92 			# Size (in MBs) of host memory expected
+	hma_regions = stag,pbl,rq	# What all regions to place in host memory
 
 # Some "definitions" to make the rest of this a bit more readable.  We support
 # 4 ports, 3 functions (NIC, FCoE and iSCSI), scaling up to 8 "CPU Queue Sets"
@@ -391,10 +398,11 @@
 	r_caps = all		# read permissions for all commands
 	nvi = 28		# NVI_UNIFIED
 	niqflint = 202		# NFLIQ_UNIFIED + NLFIQ_WD + NFLIQ_CRYPTO (32)
-	nethctrl = 100		# NETHCTRL_UNIFIED + NETHCTRL_WD
+	nethctrl = 116		# NETHCTRL_UNIFIED + NETHCTRL_WD + ncrypto_lookaside
 	neq = 256		# NEQ_UNIFIED + NEQ_WD
 	nqpcq = 12288
 	nexactf = 40		# NMPSTCAM_UNIFIED
+	nrawf = 2
 	cmask = all		# access to all channels
 	pmask = all		# access to all four ports ...
 	nethofld = 1024		# number of user mode ethernet flow contexts
@@ -403,8 +411,8 @@
 	nfilter = 496		# number of filter region entries
 	nserver = 496		# number of server region entries
 	nhash = 12288		# number of hash region entries
-	nhpfilter = 0		# number of high priority filter region entries
-	protocol = nic_vm, ofld, rddp, rdmac, iscsi_initiator_pdu, iscsi_target_pdu, iscsi_t10dif, tlskeys, crypto_lookaside
+	nhpfilter = 64		# number of high priority filter region entries
+	protocol = nic_vm, ofld, rddp, rdmac, iscsi_initiator_pdu, iscsi_target_pdu, iscsi_t10dif, tlskeys, crypto_lookaside, ipsec_inline
 	tp_l2t = 3072
 	tp_ddp = 2
 	tp_ddp_iscsi = 2
@@ -486,9 +494,9 @@
 	wx_caps = 0x82		# DMAQ | VF
 	r_caps = 0x86		# DMAQ | VF | PORT
 	nvi = 1			# 1 port
-	niqflint = 4		# 2 "Queue Sets" + NXIQ
-	nethctrl = 2		# 2 "Queue Sets"
-	neq = 4			# 2 "Queue Sets" * 2
+	niqflint = 6		# 2 "Queue Sets" + NXIQ
+	nethctrl = 4		# 2 "Queue Sets"
+	neq = 8			# 2 "Queue Sets" * 2
 	nexactf = 4
 	cmask = all		# access to all channels
 	pmask = 0x1		# access to only one port ...
@@ -498,9 +506,9 @@
 	wx_caps = 0x82		# DMAQ | VF
 	r_caps = 0x86		# DMAQ | VF | PORT
 	nvi = 1			# 1 port
-	niqflint = 4		# 2 "Queue Sets" + NXIQ
-	nethctrl = 2		# 2 "Queue Sets"
-	neq = 4			# 2 "Queue Sets" * 2
+	niqflint = 6		# 2 "Queue Sets" + NXIQ
+	nethctrl = 4		# 2 "Queue Sets"
+	neq = 8			# 2 "Queue Sets" * 2
 	nexactf = 4
 	cmask = all		# access to all channels
 	pmask = 0x2		# access to only one port ...
@@ -509,9 +517,9 @@
 	wx_caps = 0x82		# DMAQ | VF
 	r_caps = 0x86		# DMAQ | VF | PORT
 	nvi = 1			# 1 port
-	niqflint = 4		# 2 "Queue Sets" + NXIQ
-	nethctrl = 2		# 2 "Queue Sets"
-	neq = 4			# 2 "Queue Sets" * 2
+	niqflint = 6		# 2 "Queue Sets" + NXIQ
+	nethctrl = 4		# 2 "Queue Sets"
+	neq = 8			# 2 "Queue Sets" * 2
 	nexactf = 4
 	cmask = all		# access to all channels
 	pmask = 0x1		# access to only one port ...
@@ -521,9 +529,9 @@
 	wx_caps = 0x82		# DMAQ | VF
 	r_caps = 0x86		# DMAQ | VF | PORT
 	nvi = 1			# 1 port
-	niqflint = 4		# 2 "Queue Sets" + NXIQ
-	nethctrl = 2		# 2 "Queue Sets"
-	neq = 4			# 2 "Queue Sets" * 2
+	niqflint = 6		# 2 "Queue Sets" + NXIQ
+	nethctrl = 4		# 2 "Queue Sets"
+	neq = 8			# 2 "Queue Sets" * 2
 	nexactf = 4
 	cmask = all		# access to all channels
 	pmask = 0x2		# access to only one port ...
@@ -552,10 +560,6 @@
 	dcb_app_tlv[0] = 0x8906, ethertype, 3
 	dcb_app_tlv[1] = 0x8914, ethertype, 3
 	dcb_app_tlv[2] = 3260, socketnum, 5
-	#aec_retry_cnt = 4
-	flags = an_dis
-	fec = none		# FEC type none/rs/firecode
-
 
 [port "1"]
 	dcb = ppp, dcbx
@@ -567,14 +571,10 @@
 	dcb_app_tlv[0] = 0x8906, ethertype, 3
 	dcb_app_tlv[1] = 0x8914, ethertype, 3
 	dcb_app_tlv[2] = 3260, socketnum, 5
-	#aec_retry_cnt = 4
-	flags = an_dis
-	fec = none		# FEC type none/rs/firecode
-
 
 [fini]
-	version = 0x01000024
-	checksum = 0x36cebfcb
+	version = 0x1425001c
+	checksum = 0x64f3def4
 
 # Total resources used by above allocations:
 #   Virtual Interfaces: 104

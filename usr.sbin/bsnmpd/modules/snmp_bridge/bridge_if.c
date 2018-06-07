@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2006 Shteryana Shopova <syrinx@FreeBSD.org>
  * All rights reserved.
  *
@@ -433,7 +435,7 @@ bridge_update_bif(struct bridge_if *bif)
 }
 
 /*
- * Update all bridge interfaces' ports only - 
+ * Update all bridge interfaces' ports only -
  * make sure each bridge interface exists first.
  */
 void

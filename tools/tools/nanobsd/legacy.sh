@@ -29,8 +29,8 @@
 #
 
 # Media geometry, only relevant if bios doesn't understand LBA.
-[ -z "$NANO_SECTS" ] || NANO_SECTS=63
-[ -z "$NANO_HEADS" ] || NANO_HEADS=16
+[ -n "$NANO_SECTS" ] || NANO_SECTS=63
+[ -n "$NANO_HEADS" ] || NANO_HEADS=16
 
 # Functions and variable definitions used by the legacy nanobsd
 # image building system.
@@ -191,13 +191,13 @@ create_diskimage ( ) (
 	fi
 
 	if ${do_copyout_partition} ; then
-		echo "Writing out _.disk.image..."
-		dd conv=sparse if=/dev/${MD}${NANO_SLICE_ROOT} of=${NANO_DISKIMGDIR}/_.disk.image bs=64k
+		echo "Writing out ${NANO_IMG1NAME}..."
+		dd conv=sparse if=/dev/${MD}${NANO_SLICE_ROOT} \
+		   of=${NANO_DISKIMGDIR}/${NANO_IMG1NAME} bs=64k
 	fi
 	mdconfig -d -u $MD
 
-	trap - 1 2 15
-	trap nano_cleanup EXIT
+	trap - 1 2 15 EXIT
 
 	) > ${NANO_LOG}/_.di 2>&1
 )

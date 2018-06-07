@@ -21,12 +21,14 @@
  */
 
 void	r92cu_attach(struct rtwn_usb_softc *);
+void	r92eu_attach(struct rtwn_usb_softc *);
 void	r88eu_attach(struct rtwn_usb_softc *);
 void	r12au_attach(struct rtwn_usb_softc *);
 void	r21au_attach(struct rtwn_usb_softc *);
 
 enum {
 	RTWN_CHIP_RTL8192CU,
+	RTWN_CHIP_RTL8192EU,
 	RTWN_CHIP_RTL8188EU,
 	RTWN_CHIP_RTL8812AU,
 	RTWN_CHIP_RTL8821AU,
@@ -100,6 +102,15 @@ static const STRUCT_USB_HOST_ID rtwn_devs[] = {
 	RTWN_RTL8192CU_DEV(ZYXEL,		RTL8192CU),
 #undef RTWN_RTL8192CU_DEV
 
+	/* RTL8192EU */
+#define RTWN_RTL8192EU_DEV(v,p) \
+	{ USB_VPI(USB_VENDOR_##v, USB_PRODUCT_##v##_##p, RTWN_CHIP_RTL8192EU) }
+	RTWN_RTL8192EU_DEV(DLINK,		DWA131E1),
+	RTWN_RTL8192EU_DEV(REALTEK,		RTL8192EU),
+	RTWN_RTL8192EU_DEV(TPLINK,		WN822NV4),
+	RTWN_RTL8192EU_DEV(TPLINK,		WN823NV2),
+#undef RTWN_RTL8192EU_DEV
+
 	/* RTL8188EU */
 #define RTWN_RTL8188EU_DEV(v,p) \
 	{ USB_VPI(USB_VENDOR_##v, USB_PRODUCT_##v##_##p, RTWN_CHIP_RTL8188EU) }
@@ -123,9 +134,12 @@ static const STRUCT_USB_HOST_ID rtwn_devs[] = {
 	RTWN_RTL8812AU_DEV(MELCO,		WIU3866D),
 	RTWN_RTL8812AU_DEV(NEC,			WL900U),
 	RTWN_RTL8812AU_DEV(PLANEX2,		GW900D),
+	RTWN_RTL8812AU_DEV(REALTEK,		RTL8812AU),
 	RTWN_RTL8812AU_DEV(SENAO,		EUB1200AC),
 	RTWN_RTL8812AU_DEV(SITECOMEU,		WLA7100),
 	RTWN_RTL8812AU_DEV(TPLINK,		T4U),
+	RTWN_RTL8812AU_DEV(TPLINK,		T4UV2),
+	RTWN_RTL8812AU_DEV(TPLINK,		T4UHV2),
 	RTWN_RTL8812AU_DEV(TRENDNET,		TEW805UB),
 	RTWN_RTL8812AU_DEV(ZYXEL,		NWD6605),
 #undef RTWN_RTL8812AU_DEV
@@ -147,6 +161,7 @@ typedef void	(*chip_usb_attach)(struct rtwn_usb_softc *);
 
 static const chip_usb_attach rtwn_chip_usb_attach[RTWN_CHIP_MAX_USB] = {
 	[RTWN_CHIP_RTL8192CU] = r92cu_attach,
+	[RTWN_CHIP_RTL8192EU] = r92eu_attach,
 	[RTWN_CHIP_RTL8188EU] = r88eu_attach,
 	[RTWN_CHIP_RTL8812AU] = r12au_attach,
 	[RTWN_CHIP_RTL8821AU] = r21au_attach

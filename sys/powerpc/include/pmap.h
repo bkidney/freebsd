@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause AND BSD-4-Clause
+ *
  * Copyright (C) 2006 Semihalf, Marian Balakowicz <m8@semihalf.com>
  * All rights reserved.
  *
@@ -188,8 +190,16 @@ struct pmap {
 	tlbtid_t		pm_tid[MAXCPU];	/* TID to identify this pmap entries in TLB */
 	cpuset_t		pm_active;	/* active on cpus */
 
+#ifdef __powerpc64__
+	/* Page table directory, array of pointers to page directories. */
+	pte_t **pm_pp2d[PP2D_NENTRIES];
+
+	/* List of allocated pdir bufs (pdir kva regions). */
+	TAILQ_HEAD(, ptbl_buf)	pm_pdir_list;
+#else
 	/* Page table directory, array of pointers to page tables. */
 	pte_t			*pm_pdir[PDIR_NENTRIES];
+#endif
 
 	/* List of allocated ptbl bufs (ptbl kva regions). */
 	TAILQ_HEAD(, ptbl_buf)	pm_ptbl_list;
@@ -243,13 +253,17 @@ extern	struct pmap kernel_pmap_store;
 
 void		pmap_bootstrap(vm_offset_t, vm_offset_t);
 void		pmap_kenter(vm_offset_t va, vm_paddr_t pa);
-void		pmap_kenter_attr(vm_offset_t va, vm_offset_t pa, vm_memattr_t);
+void		pmap_kenter_attr(vm_offset_t va, vm_paddr_t pa, vm_memattr_t);
 void		pmap_kremove(vm_offset_t);
 void		*pmap_mapdev(vm_paddr_t, vm_size_t);
 void		*pmap_mapdev_attr(vm_paddr_t, vm_size_t, vm_memattr_t);
 void		pmap_unmapdev(vm_offset_t, vm_size_t);
 void		pmap_page_set_memattr(vm_page_t, vm_memattr_t);
 int		pmap_change_attr(vm_offset_t, vm_size_t, vm_memattr_t);
+int		pmap_map_user_ptr(pmap_t pm, volatile const void *uaddr,
+		    void **kaddr, size_t ulen, size_t *klen);
+int		pmap_decode_kernel_ptr(vm_offset_t addr, int *is_user,
+		    vm_offset_t *decoded_addr);
 void		pmap_deactivate(struct thread *);
 vm_paddr_t	pmap_kextract(vm_offset_t);
 int		pmap_dev_direct_mapped(vm_paddr_t, vm_size_t);

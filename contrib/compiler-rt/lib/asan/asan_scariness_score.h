@@ -34,10 +34,10 @@
 #include "sanitizer_common/sanitizer_libc.h"
 
 namespace __asan {
-class ScarinessScore {
- public:
-  ScarinessScore() {
+struct ScarinessScoreBase {
+  void Clear() {
     descr[0] = 0;
+    score = 0;
   }
   void Scare(int add_to_score, const char *reason) {
     if (descr[0])
@@ -47,19 +47,26 @@ class ScarinessScore {
   };
   int GetScore() const { return score; }
   const char *GetDescription() const { return descr; }
-  void Print() {
+  void Print() const {
     if (score && flags()->print_scariness)
       Printf("SCARINESS: %d (%s)\n", score, descr);
   }
   static void PrintSimple(int score, const char *descr) {
-    ScarinessScore SS;
-    SS.Scare(score, descr);
-    SS.Print();
+    ScarinessScoreBase SSB;
+    SSB.Clear();
+    SSB.Scare(score, descr);
+    SSB.Print();
   }
 
  private:
-  int score = 0;
+  int score;
   char descr[1024];
+};
+
+struct ScarinessScore : ScarinessScoreBase {
+  ScarinessScore() {
+    Clear();
+  }
 };
 
 }  // namespace __asan

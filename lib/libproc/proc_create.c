@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2008 John Birrell (jb@freebsd.org)
  * All rights reserved.
  *
@@ -44,6 +46,8 @@ __FBSDID("$FreeBSD$");
 #include <libprocstat.h>
 
 #include "_libproc.h"
+
+extern char * const *environ;
 
 static int	getelfclass(int);
 static int	proc_init(pid_t, int, int, struct proc_handle **);
@@ -174,19 +178,20 @@ out:
 }
 
 int
-proc_create(const char *file, char * const *argv, proc_child_func *pcf,
-    void *child_arg, struct proc_handle **pphdl)
+proc_create(const char *file, char * const *argv, char * const *envp,
+    proc_child_func *pcf, void *child_arg, struct proc_handle **pphdl)
 {
 	struct proc_handle *phdl;
-	int error = 0;
-	int status;
+	int error, status;
 	pid_t pid;
 
 	if (elf_version(EV_CURRENT) == EV_NONE)
 		return (ENOENT);
 
-	/* Fork a new process. */
-	if ((pid = vfork()) == -1)
+	error = 0;
+	phdl = NULL;
+
+	if ((pid = fork()) == -1)
 		error = errno;
 	else if (pid == 0) {
 		/* The child expects to be traced. */
@@ -196,18 +201,14 @@ proc_create(const char *file, char * const *argv, proc_child_func *pcf,
 		if (pcf != NULL)
 			(*pcf)(child_arg);
 
-		/* Execute the specified file: */
+		if (envp != NULL)
+			environ = envp;
+
 		execvp(file, argv);
 
-		/* Couldn't execute the file. */
 		_exit(2);
 		/* NOTREACHED */
 	} else {
-		/* The parent owns the process handle. */
-		error = proc_init(pid, 0, PS_IDLE, &phdl);
-		if (error != 0)
-			goto bad;
-
 		/* Wait for the child process to stop. */
 		if (waitpid(pid, &status, WUNTRACED) == -1) {
 			error = errno;
@@ -217,16 +218,21 @@ proc_create(const char *file, char * const *argv, proc_child_func *pcf,
 
 		/* Check for an unexpected status. */
 		if (!WIFSTOPPED(status)) {
-			error = errno;
+			error = ENOENT;
 			DPRINTFX("ERROR: child process %d status 0x%x", pid, status);
 			goto bad;
-		} else
+		}
+
+		/* The parent owns the process handle. */
+		error = proc_init(pid, 0, PS_IDLE, &phdl);
+		if (error == 0)
 			phdl->status = PS_STOP;
-	}
+
 bad:
-	if (error && phdl != NULL) {
-		proc_free(phdl);
-		phdl = NULL;
+		if (error != 0 && phdl != NULL) {
+			proc_free(phdl);
+			phdl = NULL;
+		}
 	}
 	*pphdl = phdl;
 	return (error);

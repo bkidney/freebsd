@@ -23,14 +23,8 @@
 #ifdef _FILE_OFFSET_BITS
 #undef _FILE_OFFSET_BITS
 #endif
-#if SANITIZER_FREEBSD
-#define _WANT_RTENTRY
-#include <sys/param.h>
-#include <sys/socketvar.h>
-#endif
 #include <arpa/inet.h>
 #include <dirent.h>
-#include <errno.h>
 #include <grp.h>
 #include <limits.h>
 #include <net/if.h>
@@ -51,6 +45,9 @@
 #include <termios.h>
 #include <time.h>
 #include <wchar.h>
+#if !SANITIZER_MAC && !SANITIZER_FREEBSD
+#include <utmp.h>
+#endif
 
 #if !SANITIZER_IOS
 #include <net/route.h>
@@ -59,6 +56,7 @@
 #if !SANITIZER_ANDROID
 #include <sys/mount.h>
 #include <sys/timeb.h>
+#include <utmpx.h>
 #endif
 
 #if SANITIZER_LINUX
@@ -212,6 +210,7 @@ namespace __sanitizer {
   unsigned struct_sigaction_sz = sizeof(struct sigaction);
   unsigned struct_itimerval_sz = sizeof(struct itimerval);
   unsigned pthread_t_sz = sizeof(pthread_t);
+  unsigned pthread_mutex_t_sz = sizeof(pthread_mutex_t);
   unsigned pthread_cond_t_sz = sizeof(pthread_cond_t);
   unsigned pid_t_sz = sizeof(pid_t);
   unsigned timeval_sz = sizeof(timeval);
@@ -266,9 +265,10 @@ namespace __sanitizer {
   unsigned struct_statvfs_sz = sizeof(struct statvfs);
 #endif // (SANITIZER_LINUX || SANITIZER_FREEBSD) && !SANITIZER_ANDROID
 
-  uptr sig_ign = (uptr)SIG_IGN;
-  uptr sig_dfl = (uptr)SIG_DFL;
-  uptr sa_siginfo = (uptr)SA_SIGINFO;
+  const uptr sig_ign = (uptr)SIG_IGN;
+  const uptr sig_dfl = (uptr)SIG_DFL;
+  const uptr sig_err = (uptr)SIG_ERR;
+  const uptr sa_siginfo = (uptr)SA_SIGINFO;
 
 #if SANITIZER_LINUX
   int e_tabsz = (int)E_TABSZ;
@@ -282,6 +282,13 @@ namespace __sanitizer {
   int shmctl_ipc_info = (int)IPC_INFO;
   int shmctl_shm_info = (int)SHM_INFO;
   int shmctl_shm_stat = (int)SHM_STAT;
+#endif
+
+#if !SANITIZER_MAC && !SANITIZER_FREEBSD
+  unsigned struct_utmp_sz = sizeof(struct utmp);
+#endif
+#if !SANITIZER_ANDROID
+  unsigned struct_utmpx_sz = sizeof(struct utmpx);
 #endif
 
   int map_fixed = MAP_FIXED;
@@ -422,6 +429,7 @@ unsigned struct_ElfW_Phdr_sz = sizeof(Elf_Phdr);
   unsigned struct_input_absinfo_sz = sizeof(struct input_absinfo);
   unsigned struct_input_id_sz = sizeof(struct input_id);
   unsigned struct_mtpos_sz = sizeof(struct mtpos);
+  unsigned struct_rtentry_sz = sizeof(struct rtentry);
   unsigned struct_termio_sz = sizeof(struct termio);
   unsigned struct_vt_consize_sz = sizeof(struct vt_consize);
   unsigned struct_vt_sizes_sz = sizeof(struct vt_sizes);
@@ -441,7 +449,6 @@ unsigned struct_ElfW_Phdr_sz = sizeof(Elf_Phdr);
   unsigned struct_midi_info_sz = sizeof(struct midi_info);
   unsigned struct_mtget_sz = sizeof(struct mtget);
   unsigned struct_mtop_sz = sizeof(struct mtop);
-  unsigned struct_rtentry_sz = sizeof(struct rtentry);
   unsigned struct_sbi_instrument_sz = sizeof(struct sbi_instrument);
   unsigned struct_seq_event_rec_sz = sizeof(struct seq_event_rec);
   unsigned struct_synth_info_sz = sizeof(struct synth_info);
@@ -925,17 +932,11 @@ unsigned struct_ElfW_Phdr_sz = sizeof(Elf_Phdr);
   unsigned IOCTL_SNDCTL_DSP_GETOSPACE = SNDCTL_DSP_GETOSPACE;
 #endif // (SANITIZER_LINUX || SANITIZER_FREEBSD) && !SANITIZER_ANDROID
 
-  const int errno_EINVAL = EINVAL;
-// EOWNERDEAD is not present in some older platforms.
-#if defined(EOWNERDEAD)
-  const int errno_EOWNERDEAD = EOWNERDEAD;
-#else
-  const int errno_EOWNERDEAD = -1;
-#endif
-
   const int si_SEGV_MAPERR = SEGV_MAPERR;
   const int si_SEGV_ACCERR = SEGV_ACCERR;
 } // namespace __sanitizer
+
+using namespace __sanitizer;
 
 COMPILER_CHECK(sizeof(__sanitizer_pthread_attr_t) >= sizeof(pthread_attr_t));
 

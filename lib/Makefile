@@ -35,13 +35,16 @@ SUBDIR=	${SUBDIR_BOOTSTRAP} \
 	libcalendar \
 	libcam \
 	libcapsicum \
+	libcasper \
 	libcompat \
 	libcrypt \
 	libdevctl \
 	libdevinfo \
 	libdevstat \
+	${_libdl} \
 	libdwarf \
 	libedit \
+	libelftc \
 	libevent \
 	libexecinfo \
 	libexpat \
@@ -63,10 +66,12 @@ SUBDIR=	${SUBDIR_BOOTSTRAP} \
 	libopenbsd \
 	libopie \
 	libpam \
-	libpcap \
+	libpathconv \
+	${_libpcap} \
 	libpjdlog \
 	${_libproc} \
 	libprocstat \
+	libregex \
 	librpcsvc \
 	librss \
 	librt \
@@ -74,7 +79,6 @@ SUBDIR=	${SUBDIR_BOOTSTRAP} \
 	libsbuf \
 	libsmb \
 	libsqlite3 \
-	libstand \
 	libstdbuf \
 	libstdthreads \
 	libsysdecode \
@@ -90,6 +94,7 @@ SUBDIR=	${SUBDIR_BOOTSTRAP} \
 	libxo \
 	liby \
 	libz \
+	libzstd \
 	ncurses
 
 # Inter-library dependencies.  When the makefile for a library contains LDADD
@@ -106,7 +111,7 @@ SUBDIR_DEPEND_libdevstat= libkvm
 SUBDIR_DEPEND_libdpv= libfigpar ncurses libutil
 SUBDIR_DEPEND_libedit= ncurses
 SUBDIR_DEPEND_libgeom= libexpat libsbuf
-SUBDIR_DEPEND_liblibrpcsec_gss= libgssapi
+SUBDIR_DEPEND_librpcsec_gss= libgssapi
 SUBDIR_DEPEND_libmagic= libz
 SUBDIR_DEPEND_libmemstat= libkvm
 SUBDIR_DEPEND_libopie= libmd
@@ -126,7 +131,6 @@ SUBDIR.${MK_ATM}+=	libngatm
 SUBDIR.${MK_BLACKLIST}+=libblacklist
 SUBDIR.${MK_BLUETOOTH}+=libbluetooth libsdp
 SUBDIR.${MK_BSNMP}+=	libbsnmp
-SUBDIR.${MK_CASPER}+=	libcasper
 
 .if !defined(COMPAT_32BIT) && !defined(COMPAT_SOFTFP)
 SUBDIR.${MK_CLANG}+=	clang
@@ -134,7 +138,7 @@ SUBDIR.${MK_CLANG}+=	clang
 
 SUBDIR.${MK_CUSE}+= 	libcuse
 SUBDIR.${MK_CXX}+=	libdevdctl
-SUBDIR.${MK_TOOLCHAIN}+=libelftc libpe
+SUBDIR.${MK_TOOLCHAIN}+=libpe
 SUBDIR.${MK_DIALOG}+=	libdpv
 SUBDIR.${MK_FILE}+=	libmagic
 SUBDIR.${MK_GPIO}+=	libgpio
@@ -156,6 +160,7 @@ _libclang_rt=	libclang_rt
 .if ${MK_LIBCPLUSPLUS} != "no"
 _libcxxrt=	libcxxrt
 _libcplusplus=	libc++
+_libcplusplus+=	libc++experimental
 .endif
 
 SUBDIR.${MK_EFI}+=	libefivar
@@ -170,8 +175,21 @@ SUBDIR.${MK_NIS}+=	libypclnt
 _libvgl=	libvgl
 .endif
 
+.if ${MACHINE_CPUARCH} == "aarch64"
+SUBDIR.${MK_PMC}+=	libopencsd
+.endif
+
 .if ${MACHINE_CPUARCH} == "amd64"
+SUBDIR.${MK_PMC}+=	libipt
 SUBDIR.${MK_BHYVE}+=	libvmmapi
+.endif
+
+.if ${MK_OFED} == "no"
+#
+# When OFED is enabled libpcap is built as part of
+# OFED due to library dependencies
+#
+_libpcap=	libpcap
 .endif
 
 .if ${MACHINE_CPUARCH} != "sparc64"
@@ -179,8 +197,14 @@ _libproc=	libproc
 _librtld_db=	librtld_db
 .endif
 
+.if defined(LINKER_FEATURES) && ${LINKER_FEATURES:Mfilter}
+_libdl=		libdl
+.endif
+
 SUBDIR.${MK_OPENSSL}+=	libmp
-SUBDIR.${MK_PMC}+=	libpmc
+.if (${COMPILER_TYPE} == "clang" || (${COMPILER_TYPE} == "gcc" && ${COMPILER_VERSION} >= 60100))
+SUBDIR.${MK_PMC}+=	libpmc libpmcstat
+.endif
 SUBDIR.${MK_RADIUS_SUPPORT}+=	libradius
 SUBDIR.${MK_SENDMAIL}+=	libmilter libsm libsmdb libsmutil
 SUBDIR.${MK_TELNET}+=	libtelnet

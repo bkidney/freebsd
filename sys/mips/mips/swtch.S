@@ -14,7 +14,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -55,7 +55,6 @@
  *	assembly language support routines.
  */
 
-#include "opt_compat.h"
 #include <sys/syscall.h>
 #include <machine/asm.h>
 #include <machine/cpu.h>
@@ -64,7 +63,7 @@
 #include <machine/pte.h>
 #include <machine/pcb.h>
 
-#include "assym.s"
+#include "assym.inc"
 
 	.set	noreorder			# Noreorder is default style!
 
@@ -416,7 +415,7 @@ LEAF(MipsSwitchFPState)
 	.set hardfloat
 	mfc0	t1, MIPS_COP_0_STATUS	# Save old SR
 	HAZARD_DELAY
-#if defined(__mips_n64)
+#if defined(__mips_n32) || defined(__mips_n64)
 	or	t0, t1, MIPS_SR_COP_1_BIT | MIPS_SR_FR	# enable the coprocessor
 #else
 	or	t0, t1, MIPS_SR_COP_1_BIT 		# enable the coprocessor
@@ -526,6 +525,44 @@ END(MipsSwitchFPState)
 
 /*----------------------------------------------------------------------------
  *
+ * MipsFPID --
+ *
+ *	Read and return the floating point implementation register.
+ *
+ *	uint32_t
+ *	MipsFPID(void)
+ *
+ * Results:
+ *	Floating point implementation register.
+ *
+ * Side effects:
+ *	None.
+ *
+ *----------------------------------------------------------------------------
+ */
+LEAF(MipsFPID)
+	.set push
+	.set hardfloat
+	mfc0	t1, MIPS_COP_0_STATUS		# Save the status register.
+	HAZARD_DELAY
+#if defined(__mips_n32) || defined(__mips_n64)
+	or	t0, t1, MIPS_SR_COP_1_BIT | MIPS_SR_FR
+#else
+	or	t0, t1, MIPS_SR_COP_1_BIT
+#endif
+	mtc0	t0, MIPS_COP_0_STATUS 		# Enable the coprocessor
+	HAZARD_DELAY
+	ITLBNOPFIX
+	cfc1	v0, MIPS_FPU_ID
+	mtc0	t1, MIPS_COP_0_STATUS		# Restore the status register.
+	ITLBNOPFIX
+	j	ra
+	nop
+	.set pop
+END(MipsFPID)
+
+/*----------------------------------------------------------------------------
+ *
  * MipsSaveCurFPState --
  *
  *	Save the current floating point coprocessor state.
@@ -547,7 +584,7 @@ LEAF(MipsSaveCurFPState)
 	PTR_L	a0, TD_PCB(a0)			# get pointer to pcb for thread
 	mfc0	t1, MIPS_COP_0_STATUS		# Disable interrupts and
 	HAZARD_DELAY
-#if defined(__mips_n64)
+#if defined(__mips_n32) || defined(__mips_n64)
 	or	t0, t1, MIPS_SR_COP_1_BIT | MIPS_SR_FR		#  enable the coprocessor
 #else
 	or	t0, t1, MIPS_SR_COP_1_BIT 			#  enable the coprocessor

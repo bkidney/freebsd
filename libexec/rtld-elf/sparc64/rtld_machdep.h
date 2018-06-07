@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 1999, 2000 John D. Polstra.
  * All rights reserved.
  *
@@ -39,9 +41,8 @@ Elf_Dyn *rtld_dynamic_addr(void);
 #define	rtld_dynamic(obj)	rtld_dynamic_addr()
 
 Elf_Addr reloc_jmpslot(Elf_Addr *, Elf_Addr,
-		       const struct Struct_Obj_Entry *,
-		       const struct Struct_Obj_Entry *,
-		       const Elf_Rel *);
+    const struct Struct_Obj_Entry *, const struct Struct_Obj_Entry *,
+    const Elf_Rel *);
 
 #define make_function_pointer(def, defobj) \
 	((defobj)->relocbase + (def)->st_value)

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1998-2016 Dag-Erling Smørgrav
  * Copyright (c) 2013 Michael Gmelin <freebsd@grem.de>
  * All rights reserved.
@@ -153,7 +155,7 @@ fetch_syserr(void)
 	case EHOSTDOWN:
 		fetchLastErrCode = FETCH_DOWN;
 		break;
-default:
+	default:
 		fetchLastErrCode = FETCH_UNKNOWN;
 	}
 	snprintf(fetchLastErrString, MAXERRSTRING, "%s", strerror(errno));
@@ -248,37 +250,51 @@ fetch_resolve(const char *addr, int port, int af)
 {
 	char hbuf[256], sbuf[8];
 	struct addrinfo hints, *res;
-	const char *sep, *host, *service;
+	const char *hb, *he, *sep;
+	const char *host, *service;
 	int err, len;
 
-	/* split address if necessary */
-	err = EAI_SYSTEM;
-	if ((sep = strchr(addr, ':')) != NULL) {
+	/* first, check for a bracketed IPv6 address */
+	if (*addr == '[') {
+		hb = addr + 1;
+		if ((sep = strchr(hb, ']')) == NULL) {
+			errno = EINVAL;
+			goto syserr;
+		}
+		he = sep++;
+	} else {
+		hb = addr;
+		sep = strchrnul(hb, ':');
+		he = sep;
+	}
+
+	/* see if we need to copy the host name */
+	if (*he != '\0') {
 		len = snprintf(hbuf, sizeof(hbuf),
-		    "%.*s", (int)(sep - addr), addr);
+		    "%.*s", (int)(he - hb), hb);
 		if (len < 0)
-			return (NULL);
+			goto syserr;
 		if (len >= (int)sizeof(hbuf)) {
 			errno = ENAMETOOLONG;
-			fetch_syserr();
-			return (NULL);
+			goto syserr;
 		}
 		host = hbuf;
-		service = sep + 1;
-	} else if (port != 0) {
+	} else {
+		host = hb;
+	}
+
+	/* was it followed by a service name? */
+	if (*sep == '\0' && port != 0) {
 		if (port < 1 || port > 65535) {
 			errno = EINVAL;
-			fetch_syserr();
-			return (NULL);
+			goto syserr;
 		}
-		if (snprintf(sbuf, sizeof(sbuf), "%d", port) < 0) {
-			fetch_syserr();
-			return (NULL);
-		}
-		host = addr;
+		if (snprintf(sbuf, sizeof(sbuf), "%d", port) < 0)
+			goto syserr;
 		service = sbuf;
+	} else if (*sep != '\0') {
+		service = sep + 1;
 	} else {
-		host = addr;
 		service = NULL;
 	}
 
@@ -292,6 +308,9 @@ fetch_resolve(const char *addr, int port, int af)
 		return (NULL);
 	}
 	return (res);
+syserr:
+	fetch_syserr();
+	return (NULL);
 }
 
 
@@ -328,7 +347,7 @@ fetch_connect(const char *host, int port, int af, int verbose)
 	conn_t *conn = NULL;
 	int err = 0, sd = -1;
 
-	DEBUG(fprintf(stderr, "---> %s:%d\n", host, port));
+	DEBUGF("---> %s:%d\n", host, port);
 
 	/* resolve server address */
 	if (verbose)
@@ -371,7 +390,7 @@ fetch_connect(const char *host, int port, int af, int verbose)
 	}
 	if (err != 0) {
 		if (verbose)
-			fetch_info("failed to connect to %s:%s", host, port);
+			fetch_info("failed to connect to %s:%d", host, port);
 		goto syserr;
 	}
 
@@ -1139,7 +1158,7 @@ fetch_getln(conn_t *conn)
 	} while (c != '\n');
 
 	conn->buf[conn->buflen] = '\0';
-	DEBUG(fprintf(stderr, "<<< %s", conn->buf));
+	DEBUGF("<<< %s", conn->buf);
 	return (0);
 }
 
@@ -1244,7 +1263,7 @@ fetch_putln(conn_t *conn, const char *str, size_t len)
 	struct iovec iov[2];
 	int ret;
 
-	DEBUG(fprintf(stderr, ">>> %s\n", str));
+	DEBUGF(">>> %s\n", str);
 	iov[0].iov_base = __DECONST(char *, str);
 	iov[0].iov_len = len;
 	iov[1].iov_base = __DECONST(char *, ENDL);
@@ -1306,7 +1325,7 @@ fetch_add_entry(struct url_ent **p, int *size, int *len,
 	}
 
 	if (*len >= *size - 1) {
-		tmp = realloc(*p, (*size * 2 + 1) * sizeof(**p));
+		tmp = reallocarray(*p, *size * 2 + 1, sizeof(**p));
 		if (tmp == NULL) {
 			errno = ENOMEM;
 			fetch_syserr();
@@ -1339,27 +1358,23 @@ fetch_read_word(FILE *f)
 	return (word);
 }
 
-/*
- * Get authentication data for a URL from .netrc
- */
-int
-fetch_netrc_auth(struct url *url)
+static int
+fetch_netrc_open(void)
 {
+	struct passwd *pwd;
 	char fn[PATH_MAX];
-	const char *word;
-	char *p;
-	FILE *f;
+	const char *p;
+	int fd, serrno;
 
 	if ((p = getenv("NETRC")) != NULL) {
+		DEBUGF("NETRC=%s\n", p);
 		if (snprintf(fn, sizeof(fn), "%s", p) >= (int)sizeof(fn)) {
 			fetch_info("$NETRC specifies a file name "
 			    "longer than PATH_MAX");
 			return (-1);
 		}
 	} else {
-		if ((p = getenv("HOME")) != NULL) {
-			struct passwd *pwd;
-
+		if ((p = getenv("HOME")) == NULL) {
 			if ((pwd = getpwuid(getuid())) == NULL ||
 			    (p = pwd->pw_dir) == NULL)
 				return (-1);
@@ -1368,17 +1383,47 @@ fetch_netrc_auth(struct url *url)
 			return (-1);
 	}
 
-	if ((f = fopen(fn, "r")) == NULL)
+	if ((fd = open(fn, O_RDONLY)) < 0) {
+		serrno = errno;
+		DEBUGF("%s: %s\n", fn, strerror(serrno));
+		errno = serrno;
+	}
+	return (fd);
+}
+
+/*
+ * Get authentication data for a URL from .netrc
+ */
+int
+fetch_netrc_auth(struct url *url)
+{
+	const char *word;
+	int serrno;
+	FILE *f;
+
+	if (url->netrcfd < 0)
+		url->netrcfd = fetch_netrc_open();
+	if (url->netrcfd < 0)
 		return (-1);
+	if ((f = fdopen(url->netrcfd, "r")) == NULL) {
+		serrno = errno;
+		DEBUGF("fdopen(netrcfd): %s", strerror(errno));
+		close(url->netrcfd);
+		url->netrcfd = -1;
+		errno = serrno;
+		return (-1);
+	}
+	rewind(f);
+	DEBUGF("searching netrc for %s\n", url->host);
 	while ((word = fetch_read_word(f)) != NULL) {
 		if (strcmp(word, "default") == 0) {
-			DEBUG(fetch_info("Using default .netrc settings"));
+			DEBUGF("using default netrc settings\n");
 			break;
 		}
 		if (strcmp(word, "machine") == 0 &&
 		    (word = fetch_read_word(f)) != NULL &&
 		    strcasecmp(word, url->host) == 0) {
-			DEBUG(fetch_info("Using .netrc settings for %s", word));
+			DEBUGF("using netrc settings for %s\n", word);
 			break;
 		}
 	}
@@ -1410,9 +1455,13 @@ fetch_netrc_auth(struct url *url)
 		}
 	}
 	fclose(f);
+	url->netrcfd = -1;
 	return (0);
- ferr:
+ferr:
+	serrno = errno;
 	fclose(f);
+	url->netrcfd = -1;
+	errno = serrno;
 	return (-1);
 }
 

@@ -115,6 +115,13 @@
 // || `[0x40000000, 0x47ffffff]` || LowShadow  ||
 // || `[0x00000000, 0x3fffffff]` || LowMem     ||
 //
+// Shadow mapping on NetBSD/x86-64 with SHADOW_OFFSET == 0x400000000000:
+// || `[0x4feffffffe01, 0x7f7ffffff000]` || HighMem    ||
+// || `[0x49fdffffffc0, 0x4feffffffe00]` || HighShadow ||
+// || `[0x480000000000, 0x49fdffffffbf]` || ShadowGap  ||
+// || `[0x400000000000, 0x47ffffffffff]` || LowShadow  ||
+// || `[0x000000000000, 0x3fffffffffff]` || LowMem     ||
+//
 // Default Windows/i386 mapping:
 // (the exact location of HighShadow/HighMem may vary depending
 //  on WoW64, /LARGEADDRESSAWARE, etc).
@@ -124,10 +131,16 @@
 // || `[0x30000000, 0x35ffffff]` || LowShadow  ||
 // || `[0x00000000, 0x2fffffff]` || LowMem     ||
 
+#if defined(ASAN_SHADOW_SCALE)
+static const u64 kDefaultShadowScale = ASAN_SHADOW_SCALE;
+#else
 static const u64 kDefaultShadowScale = 3;
+#endif
+static const u64 kDefaultShadowSentinel = ~(uptr)0;
 static const u64 kDefaultShadowOffset32 = 1ULL << 29;  // 0x20000000
 static const u64 kDefaultShadowOffset64 = 1ULL << 44;
-static const u64 kDefaultShort64bitShadowOffset = 0x7FFF8000;  // < 2G.
+static const u64 kDefaultShort64bitShadowOffset =
+    0x7FFFFFFF & (~0xFFFULL << kDefaultShadowScale);  // < 2G.
 static const u64 kIosShadowOffset32 = 1ULL << 30;  // 0x40000000
 static const u64 kIosShadowOffset64 = 0x120200000;
 static const u64 kIosSimShadowOffset32 = 1ULL << 30;
@@ -135,19 +148,20 @@ static const u64 kIosSimShadowOffset64 = kDefaultShadowOffset64;
 static const u64 kAArch64_ShadowOffset64 = 1ULL << 36;
 static const u64 kMIPS32_ShadowOffset32 = 0x0aaa0000;
 static const u64 kMIPS64_ShadowOffset64 = 1ULL << 37;
-static const u64 kPPC64_ShadowOffset64 = 1ULL << 41;
+static const u64 kPPC64_ShadowOffset64 = 1ULL << 44;
 static const u64 kSystemZ_ShadowOffset64 = 1ULL << 52;
 static const u64 kFreeBSD_ShadowOffset32 = 1ULL << 30;  // 0x40000000
 static const u64 kFreeBSD_ShadowOffset64 = 1ULL << 46;  // 0x400000000000
+static const u64 kNetBSD_ShadowOffset64 = 1ULL << 46;  // 0x400000000000
 static const u64 kWindowsShadowOffset32 = 3ULL << 28;  // 0x30000000
-static const u64 kWindowsShadowOffset64 = 1ULL << 45;  // 32TB
 
 #define SHADOW_SCALE kDefaultShadowScale
 
-
-#if SANITIZER_WORDSIZE == 32
+#if SANITIZER_FUCHSIA
+#  define SHADOW_OFFSET (0)
+#elif SANITIZER_WORDSIZE == 32
 #  if SANITIZER_ANDROID
-#    define SHADOW_OFFSET (0)
+#    define SHADOW_OFFSET __asan_shadow_memory_dynamic_address
 #  elif defined(__mips__)
 #    define SHADOW_OFFSET kMIPS32_ShadowOffset32
 #  elif SANITIZER_FREEBSD
@@ -168,7 +182,7 @@ static const u64 kWindowsShadowOffset64 = 1ULL << 45;  // 32TB
 #    if SANITIZER_IOSSIM
 #      define SHADOW_OFFSET kIosSimShadowOffset64
 #    else
-#      define SHADOW_OFFSET kIosShadowOffset64
+#      define SHADOW_OFFSET __asan_shadow_memory_dynamic_address
 #    endif
 #  elif defined(__aarch64__)
 #    define SHADOW_OFFSET kAArch64_ShadowOffset64
@@ -178,20 +192,27 @@ static const u64 kWindowsShadowOffset64 = 1ULL << 45;  // 32TB
 #    define SHADOW_OFFSET kSystemZ_ShadowOffset64
 #  elif SANITIZER_FREEBSD
 #    define SHADOW_OFFSET kFreeBSD_ShadowOffset64
+#  elif SANITIZER_NETBSD
+#    define SHADOW_OFFSET kNetBSD_ShadowOffset64
 #  elif SANITIZER_MAC
 #   define SHADOW_OFFSET kDefaultShadowOffset64
 #  elif defined(__mips64)
 #   define SHADOW_OFFSET kMIPS64_ShadowOffset64
 #  elif SANITIZER_WINDOWS64
-#   define SHADOW_OFFSET kWindowsShadowOffset64
+#   define SHADOW_OFFSET __asan_shadow_memory_dynamic_address
 #  else
 #   define SHADOW_OFFSET kDefaultShort64bitShadowOffset
 #  endif
 #endif
 
+#if SANITIZER_ANDROID && defined(__arm__)
+# define ASAN_PREMAP_SHADOW 1
+#else
+# define ASAN_PREMAP_SHADOW 0
+#endif
+
 #define SHADOW_GRANULARITY (1ULL << SHADOW_SCALE)
 #define MEM_TO_SHADOW(mem) (((mem) >> SHADOW_SCALE) + (SHADOW_OFFSET))
-#define SHADOW_TO_MEM(shadow) (((shadow) - SHADOW_OFFSET) << SHADOW_SCALE)
 
 #define kLowMemBeg      0
 #define kLowMemEnd      (SHADOW_OFFSET ? SHADOW_OFFSET - 1 : 0)
@@ -269,9 +290,25 @@ static inline bool AddrIsInMidMem(uptr a) {
   return kMidMemBeg && a >= kMidMemBeg && a <= kMidMemEnd;
 }
 
+static inline bool AddrIsInShadowGap(uptr a) {
+  PROFILE_ASAN_MAPPING();
+  if (kMidMemBeg) {
+    if (a <= kShadowGapEnd)
+      return SHADOW_OFFSET == 0 || a >= kShadowGapBeg;
+    return (a >= kShadowGap2Beg && a <= kShadowGap2End) ||
+           (a >= kShadowGap3Beg && a <= kShadowGap3End);
+  }
+  // In zero-based shadow mode we treat addresses near zero as addresses
+  // in shadow gap as well.
+  if (SHADOW_OFFSET == 0)
+    return a <= kShadowGapEnd;
+  return a >= kShadowGapBeg && a <= kShadowGapEnd;
+}
+
 static inline bool AddrIsInMem(uptr a) {
   PROFILE_ASAN_MAPPING();
-  return AddrIsInLowMem(a) || AddrIsInMidMem(a) || AddrIsInHighMem(a);
+  return AddrIsInLowMem(a) || AddrIsInMidMem(a) || AddrIsInHighMem(a) ||
+      (flags()->protect_shadow_gap == 0 && AddrIsInShadowGap(a));
 }
 
 static inline uptr MemToShadow(uptr p) {
@@ -293,21 +330,6 @@ static inline bool AddrIsInMidShadow(uptr a) {
 static inline bool AddrIsInShadow(uptr a) {
   PROFILE_ASAN_MAPPING();
   return AddrIsInLowShadow(a) || AddrIsInMidShadow(a) || AddrIsInHighShadow(a);
-}
-
-static inline bool AddrIsInShadowGap(uptr a) {
-  PROFILE_ASAN_MAPPING();
-  if (kMidMemBeg) {
-    if (a <= kShadowGapEnd)
-      return SHADOW_OFFSET == 0 || a >= kShadowGapBeg;
-    return (a >= kShadowGap2Beg && a <= kShadowGap2End) ||
-           (a >= kShadowGap3Beg && a <= kShadowGap3End);
-  }
-  // In zero-based shadow mode we treat addresses near zero as addresses
-  // in shadow gap as well.
-  if (SHADOW_OFFSET == 0)
-    return a <= kShadowGapEnd;
-  return a >= kShadowGapBeg && a <= kShadowGapEnd;
 }
 
 static inline bool AddrIsAlignedByGranularity(uptr a) {

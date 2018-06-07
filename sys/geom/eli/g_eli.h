@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2005-2011 Pawel Jakub Dawidek <pawel@dawidek.net>
  * All rights reserved.
  *
@@ -41,6 +43,7 @@
 #include <sys/lock.h>
 #include <sys/mutex.h>
 #include <geom/geom.h>
+#include <crypto/intake.h>
 #else
 #include <assert.h>
 #include <stdio.h>
@@ -99,6 +102,8 @@
 #define	G_ELI_FLAG_NODELETE		0x00000040
 /* This GELI supports GELIBoot */
 #define	G_ELI_FLAG_GELIBOOT		0x00000080
+/* Hide passphrase length in GELIboot. */
+#define	G_ELI_FLAG_GELIDISPLAYPASS	0x00000100
 /* RUNTIME FLAGS. */
 /* Provider was open for writing. */
 #define	G_ELI_FLAG_WOPEN		0x00010000
@@ -139,6 +144,10 @@
 #define	G_ELI_CRYPTO_SW		2
 
 #ifdef _KERNEL
+#if (MAX_KEY_BYTES < G_ELI_DATAIVKEYLEN)
+#error "MAX_KEY_BYTES is less than G_ELI_DATAKEYLEN"
+#endif
+
 extern int g_eli_debug;
 extern u_int g_eli_overwrites;
 extern u_int g_eli_batch;
@@ -505,7 +514,7 @@ eli_metadata_dump(const struct g_eli_metadata *md)
 	printf("  provsize: %ju\n", (uintmax_t)md->md_provsize);
 	printf("sectorsize: %u\n", (u_int)md->md_sectorsize);
 	printf("      keys: 0x%02x\n", (u_int)md->md_keys);
-	printf("iterations: %u\n", (u_int)md->md_iterations);
+	printf("iterations: %d\n", (int)md->md_iterations);
 	bzero(str, sizeof(str));
 	for (i = 0; i < sizeof(md->md_salt); i++) {
 		str[i * 2] = hex[md->md_salt[i] >> 4];
@@ -679,6 +688,8 @@ void g_eli_crypto_ivgen(struct g_eli_softc *sc, off_t offset, u_char *iv,
 
 void g_eli_mkey_hmac(unsigned char *mkey, const unsigned char *key);
 int g_eli_mkey_decrypt(const struct g_eli_metadata *md,
+    const unsigned char *key, unsigned char *mkey, unsigned keyp);
+int g_eli_mkey_decrypt_any(const struct g_eli_metadata *md,
     const unsigned char *key, unsigned char *mkey, unsigned *nkeyp);
 int g_eli_mkey_encrypt(unsigned algo, const unsigned char *key, unsigned keylen,
     unsigned char *mkey);
@@ -692,8 +703,8 @@ int g_eli_crypto_decrypt(u_int algo, u_char *data, size_t datasize,
     const u_char *key, size_t keysize);
 
 struct hmac_ctx {
-	SHA512_CTX	shactx;
-	u_char		k_opad[128];
+	SHA512_CTX	innerctx;
+	SHA512_CTX	outerctx;
 };
 
 void g_eli_crypto_hmac_init(struct hmac_ctx *ctx, const uint8_t *hkey,

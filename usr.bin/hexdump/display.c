@@ -1,4 +1,6 @@
-/*
+/*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1989, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -10,7 +12,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -37,6 +39,8 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/capsicum.h>
+#include <sys/conf.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 
 #include <capsicum_helpers.h>
@@ -55,6 +59,7 @@ static off_t address;			/* address/offset in stream */
 static off_t eaddress;			/* end address */
 
 static void print(PR *, u_char *);
+static void noseek(void);
 
 void
 display(void)
@@ -361,12 +366,12 @@ next(char **argv)
 
 		if (caph_limit_stream(fileno(stdin), CAPH_READ) < 0)
 			err(1, "unable to restrict %s",
-			    statok ? _argv[-1] : "stdin");
+			    statok ? *_argv : "stdin");
 
 		/*
 		 * We've opened our last input file; enter capsicum sandbox.
 		 */
-		if (*_argv == NULL) {
+		if (statok == 0 || *(_argv + 1) == NULL) {
 			if (cap_enter() < 0 && errno != ENOSYS)
 				err(1, "unable to enter capability mode");
 		}
@@ -384,7 +389,7 @@ next(char **argv)
 void
 doskip(const char *fname, int statok)
 {
-	int cnt;
+	int type;
 	struct stat sb;
 
 	if (statok) {
@@ -396,16 +401,37 @@ doskip(const char *fname, int statok)
 			return;
 		}
 	}
-	if (statok && S_ISREG(sb.st_mode)) {
-		if (fseeko(stdin, skip, SEEK_SET))
-			err(1, "%s", fname);
-		address += skip;
-		skip = 0;
-	} else {
-		for (cnt = 0; cnt < skip; ++cnt)
-			if (getchar() == EOF)
-				break;
-		address += cnt;
-		skip -= cnt;
+	if (!statok || S_ISFIFO(sb.st_mode) || S_ISSOCK(sb.st_mode)) {
+		noseek();
+		return;
 	}
+	if (S_ISCHR(sb.st_mode) || S_ISBLK(sb.st_mode)) {
+		if (ioctl(fileno(stdin), FIODTYPE, &type))
+			err(1, "%s", fname);
+		/*
+		 * Most tape drives don't support seeking,
+		 * yet fseek() would succeed.
+		 */
+		if (type & D_TAPE) {
+			noseek();
+			return;
+		}
+	}
+	if (fseeko(stdin, skip, SEEK_SET)) {
+		noseek();
+		return;
+	}
+	address += skip;
+	skip = 0;
+}
+
+static void
+noseek(void)
+{
+	int count;
+	for (count = 0; count < skip; ++count)
+		if (getchar() == EOF)
+			break;
+	address += count;
+	skip -= count;
 }

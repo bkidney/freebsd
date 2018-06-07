@@ -15,6 +15,7 @@
 #ifndef LLVM_CLANG_SEMA_ATTRIBUTELIST_H
 #define LLVM_CLANG_SEMA_ATTRIBUTELIST_H
 
+#include "clang/Basic/AttrSubjectMatchRules.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/VersionTuple.h"
@@ -99,14 +100,20 @@ public:
     AS_GNU,
     /// [[...]]
     AS_CXX11,
+    /// [[...]]
+    AS_C2x,
     /// __declspec(...)
     AS_Declspec,
+    /// [uuid("...")] class Foo
+    AS_Microsoft,
     /// __ptr16, alignas(...), etc.
     AS_Keyword,
+    /// #pragma ...
+    AS_Pragma,
+    // Note TableGen depends on the order above.  Do not add or change the order
+    // without adding related code to TableGen/ClangAttrEmitter.cpp.
     /// Context-sensitive version of a keyword attribute.
     AS_ContextSensitiveKeyword,
-    /// #pragma ...
-    AS_Pragma
   };
 
 private:
@@ -369,8 +376,12 @@ public:
   }
 
   bool isDeclspecAttribute() const { return SyntaxUsed == AS_Declspec; }
+  bool isMicrosoftAttribute() const { return SyntaxUsed == AS_Microsoft; }
   bool isCXX11Attribute() const {
     return SyntaxUsed == AS_CXX11 || isAlignasAttribute();
+  }
+  bool isC2xAttribute() const {
+    return SyntaxUsed == AS_C2x;
   }
   bool isKeywordAttribute() const {
     return SyntaxUsed == AS_Keyword || SyntaxUsed == AS_ContextSensitiveKeyword;
@@ -506,9 +517,14 @@ public:
   unsigned getMaxArgs() const;
   bool hasVariadicArg() const;
   bool diagnoseAppertainsTo(class Sema &S, const Decl *D) const;
+  bool appliesToDecl(const Decl *D, attr::SubjectMatchRule MatchRule) const;
+  void getMatchRules(const LangOptions &LangOpts,
+                     SmallVectorImpl<std::pair<attr::SubjectMatchRule, bool>>
+                         &MatchRules) const;
   bool diagnoseLangOpts(class Sema &S) const;
   bool existsInTarget(const TargetInfo &Target) const;
   bool isKnownToGCC() const;
+  bool isSupportedByPragmaAttribute() const;
 
   /// \brief If the parsed attribute has a semantic equivalent, and it would
   /// have a semantic Spelling enumeration (due to having semantically-distinct
@@ -745,6 +761,19 @@ public:
     list = newList;
   }
 
+  void addAllAtEnd(AttributeList *newList) {
+    if (!list) {
+      list = newList;
+      return;
+    }
+
+    AttributeList *lastInList = list;
+    while (AttributeList *next = lastInList->getNext())
+      lastInList = next;
+
+    lastInList->setNext(newList);
+  }
+
   void set(AttributeList *newList) {
     list = newList;
   }
@@ -757,6 +786,8 @@ public:
 
   void clear() { list = nullptr; pool.clear(); }
   AttributeList *getList() const { return list; }
+
+  void clearListOnly() { list = nullptr; }
 
   /// Returns a reference to the attribute list.  Try not to introduce
   /// dependencies on this method, it may not be long-lived.
@@ -869,44 +900,17 @@ enum AttributeDeclKind {
   ExpectedFunction,
   ExpectedUnion,
   ExpectedVariableOrFunction,
-  ExpectedFunctionVariableOrObjCInterface,
   ExpectedFunctionOrMethod,
-  ExpectedParameter,
   ExpectedFunctionMethodOrBlock,
-  ExpectedFunctionMethodOrClass,
   ExpectedFunctionMethodOrParameter,
-  ExpectedClass,
-  ExpectedEnum,
   ExpectedVariable,
-  ExpectedMethod,
-  ExpectedFieldOrGlobalVar,
-  ExpectedStruct,
-  ExpectedParameterOrTypedef,
-  ExpectedVariableOrTypedef,
-  ExpectedTLSVar,
   ExpectedVariableOrField,
   ExpectedVariableFieldOrTag,
   ExpectedTypeOrNamespace,
-  ExpectedObjectiveCInterface,
-  ExpectedMethodOrProperty,
-  ExpectedStructOrUnion,
-  ExpectedStructOrUnionOrClass,
-  ExpectedType,
-  ExpectedObjCInstanceMethod,
-  ExpectedObjCInterfaceDeclInitMethod,
   ExpectedFunctionVariableOrClass,
-  ExpectedFunctionVariableClassOrObjCInterface,
-  ExpectedObjectiveCProtocol,
-  ExpectedFunctionGlobalVarMethodOrProperty,
-  ExpectedStructOrUnionOrTypedef,
-  ExpectedStructOrTypedef,
-  ExpectedObjectiveCInterfaceOrProtocol,
   ExpectedKernelFunction,
   ExpectedFunctionWithProtoType,
-  ExpectedVariableEnumFieldOrTypedef,
-  ExpectedFunctionMethodEnumOrClass,
-  ExpectedStructClassVariableFunctionOrInlineNamespace,
-  ExpectedForMaybeUnused
+  ExpectedForMaybeUnused,
 };
 
 }  // end namespace clang

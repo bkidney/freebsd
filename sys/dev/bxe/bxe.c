@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
  * Copyright (c) 2007-2014 QLogic Corporation. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -27,7 +29,7 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#define BXE_DRIVER_VERSION "1.78.89"
+#define BXE_DRIVER_VERSION "1.78.91"
 
 #include "bxe.h"
 #include "ecore_sp.h"
@@ -167,6 +169,18 @@ static struct bxe_device_type bxe_devs[] = {
         "QLogic NetXtreme II BCM57840 4x10GbE"
     },
     {
+        QLOGIC_VENDORID,
+        CHIP_NUM_57840_4_10,
+        PCI_ANY_ID, PCI_ANY_ID,
+        "QLogic NetXtreme II BCM57840 4x10GbE"
+    },
+    {
+        BRCM_VENDORID,
+        CHIP_NUM_57840_2_20,
+        PCI_ANY_ID, PCI_ANY_ID,
+        "QLogic NetXtreme II BCM57840 2x20GbE"
+    },
+    {
         BRCM_VENDORID,
         CHIP_NUM_57840_MF,
         PCI_ANY_ID, PCI_ANY_ID,
@@ -221,6 +235,8 @@ static devclass_t bxe_devclass;
 MODULE_DEPEND(bxe, pci, 1, 1, 1);
 MODULE_DEPEND(bxe, ether, 1, 1, 1);
 DRIVER_MODULE(bxe, pci, bxe_driver, bxe_devclass, 0, 0);
+
+NETDUMP_DEFINE(bxe);
 
 /* resources needed for unloading a previously loaded device */
 
@@ -490,12 +506,19 @@ static const struct {
                 4, STATS_FLAGS_FUNC, "mbuf_alloc_tpa"},
     { STATS_OFFSET32(tx_queue_full_return),
                 4, STATS_FLAGS_FUNC, "tx_queue_full_return"},
+    { STATS_OFFSET32(bxe_tx_mq_sc_state_failures),
+                4, STATS_FLAGS_FUNC, "bxe_tx_mq_sc_state_failures"},
     { STATS_OFFSET32(tx_request_link_down_failures),
                 4, STATS_FLAGS_FUNC, "tx_request_link_down_failures"},
     { STATS_OFFSET32(bd_avail_too_less_failures),
                 4, STATS_FLAGS_FUNC, "bd_avail_too_less_failures"},
     { STATS_OFFSET32(tx_mq_not_empty),
-                4, STATS_FLAGS_FUNC, "tx_mq_not_empty"}
+                4, STATS_FLAGS_FUNC, "tx_mq_not_empty"},
+    { STATS_OFFSET32(nsegs_path1_errors),
+                4, STATS_FLAGS_FUNC, "nsegs_path1_errors"},
+    { STATS_OFFSET32(nsegs_path2_errors),
+                4, STATS_FLAGS_FUNC, "nsegs_path2_errors"}
+
 
 };
 
@@ -610,12 +633,19 @@ static const struct {
                 4, "mbuf_alloc_tpa"},
     { Q_STATS_OFFSET32(tx_queue_full_return),
                 4, "tx_queue_full_return"},
+    { Q_STATS_OFFSET32(bxe_tx_mq_sc_state_failures),
+                4, "bxe_tx_mq_sc_state_failures"},
     { Q_STATS_OFFSET32(tx_request_link_down_failures),
                 4, "tx_request_link_down_failures"},
     { Q_STATS_OFFSET32(bd_avail_too_less_failures),
                 4, "bd_avail_too_less_failures"},
     { Q_STATS_OFFSET32(tx_mq_not_empty),
-                4, "tx_mq_not_empty"}
+                4, "tx_mq_not_empty"},
+    { Q_STATS_OFFSET32(nsegs_path1_errors),
+                4, "nsegs_path1_errors"},
+    { Q_STATS_OFFSET32(nsegs_path2_errors),
+                4, "nsegs_path2_errors"}
+
 
 };
 
@@ -686,6 +716,7 @@ static void bxe_handle_fp_tq(void *context, int pending);
 
 static int bxe_add_cdev(struct bxe_softc *sc);
 static void bxe_del_cdev(struct bxe_softc *sc);
+int bxe_grc_dump(struct bxe_softc *sc);
 static int bxe_alloc_buf_rings(struct bxe_softc *sc);
 static void bxe_free_buf_rings(struct bxe_softc *sc);
 
@@ -5225,12 +5256,24 @@ bxe_tx_encap(struct bxe_fastpath *fp, struct mbuf **m_head)
                 fp->eth_q_stats.tx_dma_mapping_failure++;
                 /* No sense in trying to defrag/copy chain, drop it. :( */
                 rc = error;
-            }
-            else {
-                /* if the chain is still too long then drop it */
-                if (__predict_false(nsegs > BXE_MAX_SEGMENTS)) {
-                    bus_dmamap_unload(fp->tx_mbuf_tag, tx_buf->m_map);
-                    rc = ENODEV;
+            } else {
+               /* if the chain is still too long then drop it */
+                if(m0->m_pkthdr.csum_flags & CSUM_TSO) {
+                    /*
+                     * in case TSO is enabled nsegs should be checked against
+                     * BXE_TSO_MAX_SEGMENTS
+                     */
+                    if (__predict_false(nsegs > BXE_TSO_MAX_SEGMENTS)) {
+                        bus_dmamap_unload(fp->tx_mbuf_tag, tx_buf->m_map);
+                        fp->eth_q_stats.nsegs_path1_errors++;
+                        rc = ENODEV;
+                    }
+                } else {
+                    if (__predict_false(nsegs > BXE_MAX_SEGMENTS)) {
+                        bus_dmamap_unload(fp->tx_mbuf_tag, tx_buf->m_map);
+                        fp->eth_q_stats.nsegs_path2_errors++;
+                        rc = ENODEV;
+                    }
                 }
             }
         }
@@ -5630,6 +5673,11 @@ bxe_tx_mq_start_locked(struct bxe_softc    *sc,
 
     BXE_FP_TX_LOCK_ASSERT(fp);
 
+    if (sc->state != BXE_STATE_OPEN)  {
+        fp->eth_q_stats.bxe_tx_mq_sc_state_failures++;
+        return ENETDOWN;
+    }
+
     if (!tx_br) {
         BLOGE(sc, "Multiqueue TX and no buf_ring!\n");
         return (EINVAL);
@@ -5751,6 +5799,11 @@ bxe_tx_mq_start(struct ifnet *ifp,
 
     fp = &sc->fp[fp_index];
 
+    if (sc->state != BXE_STATE_OPEN)  {
+        fp->eth_q_stats.bxe_tx_mq_sc_state_failures++;
+        return ENETDOWN;
+    }
+
     if (BXE_FP_TX_TRYLOCK(fp)) {
         rc = bxe_tx_mq_start_locked(sc, ifp, fp, m);
         BXE_FP_TX_UNLOCK(fp);
@@ -5773,7 +5826,7 @@ bxe_mq_flush(struct ifnet *ifp)
     for (i = 0; i < sc->num_queues; i++) {
         fp = &sc->fp[i];
 
-        if (fp->state != BXE_FP_STATE_OPEN) {
+        if (fp->state != BXE_FP_STATE_IRQ) {
             BLOGD(sc, DBG_LOAD, "Not clearing fp[%02d] buf_ring (state=%d)\n",
                   fp->index, fp->state);
             continue;
@@ -5990,6 +6043,7 @@ bxe_free_mem(struct bxe_softc *sc)
 static int
 bxe_alloc_mem(struct bxe_softc *sc)
 {
+
     int context_size;
     int allocated;
     int i;
@@ -6984,7 +7038,7 @@ bxe_link_attn(struct bxe_softc *sc)
 
     /* Make sure that we are synced with the current statistics */
     bxe_stats_handle(sc, STATS_EVENT_STOP);
-
+	BLOGI(sc, "link_vars phy_flags : %x\n", sc->link_vars.phy_flags);
     elink_link_update(&sc->link_params, &sc->link_vars);
 
     if (sc->link_vars.link_up) {
@@ -11189,7 +11243,9 @@ bxe_get_q_flags(struct bxe_softc    *sc,
 
     if (if_getcapenable(sc->ifp) & IFCAP_LRO) {
         bxe_set_bit(ECORE_Q_FLG_TPA, &flags);
+#if __FreeBSD_version >= 800000
         bxe_set_bit(ECORE_Q_FLG_TPA_IPV6, &flags);
+#endif
     }
 
     if (leading) {
@@ -11626,13 +11682,13 @@ static void
 bxe_calc_fc_adv(struct bxe_softc *sc)
 {
     uint8_t cfg_idx = bxe_get_link_cfg_idx(sc);
+
+
+    sc->port.advertising[cfg_idx] &= ~(ADVERTISED_Asym_Pause |
+                                           ADVERTISED_Pause);
+
     switch (sc->link_vars.ieee_fc &
             MDIO_COMBO_IEEE0_AUTO_NEG_ADV_PAUSE_MASK) {
-    case MDIO_COMBO_IEEE0_AUTO_NEG_ADV_PAUSE_NONE:
-    default:
-        sc->port.advertising[cfg_idx] &= ~(ADVERTISED_Asym_Pause |
-                                           ADVERTISED_Pause);
-        break;
 
     case MDIO_COMBO_IEEE0_AUTO_NEG_ADV_PAUSE_BOTH:
         sc->port.advertising[cfg_idx] |= (ADVERTISED_Asym_Pause |
@@ -11642,6 +11698,10 @@ bxe_calc_fc_adv(struct bxe_softc *sc)
     case MDIO_COMBO_IEEE0_AUTO_NEG_ADV_PAUSE_ASYMMETRIC:
         sc->port.advertising[cfg_idx] |= ADVERTISED_Asym_Pause;
         break;
+
+    default:
+        break;
+
     }
 }
 
@@ -11723,15 +11783,17 @@ bxe_link_report_locked(struct bxe_softc *sc)
         return;
     }
 
+	ELINK_DEBUG_P2(sc, "Change in link status : cur_data = %x, last_reported_link = %x\n",
+					cur_data.link_report_flags, sc->last_reported_link.link_report_flags);
     sc->link_cnt++;
 
+	ELINK_DEBUG_P1(sc, "link status change count = %x\n", sc->link_cnt);
     /* report new link params and remember the state for the next time */
     memcpy(&sc->last_reported_link, &cur_data, sizeof(cur_data));
 
     if (bxe_test_bit(BXE_LINK_REPORT_LINK_DOWN,
                      &cur_data.link_report_flags)) {
         if_link_state_change(sc->ifp, LINK_STATE_DOWN);
-        BLOGI(sc, "NIC Link is Down\n");
     } else {
         const char *duplex;
         const char *flow;
@@ -11739,8 +11801,10 @@ bxe_link_report_locked(struct bxe_softc *sc)
         if (bxe_test_and_clear_bit(BXE_LINK_REPORT_FULL_DUPLEX,
                                    &cur_data.link_report_flags)) {
             duplex = "full";
+			ELINK_DEBUG_P0(sc, "link set to full duplex\n");
         } else {
             duplex = "half";
+			ELINK_DEBUG_P0(sc, "link set to half duplex\n");
         }
 
         /*
@@ -11931,61 +11995,78 @@ bxe_initial_phy_init(struct bxe_softc *sc,
 }
 
 /* must be called under IF_ADDR_LOCK */
-
 static int
-bxe_set_mc_list(struct bxe_softc *sc)
+bxe_init_mcast_macs_list(struct bxe_softc                 *sc,
+                         struct ecore_mcast_ramrod_params *p)
 {
-    struct ecore_mcast_ramrod_params rparam = { NULL };
-    int rc = 0;
-    int mc_count = 0;
-    int mcnt, i;
-    struct ecore_mcast_list_elem *mc_mac, *mc_mac_start;
-    unsigned char *mta;
     if_t ifp = sc->ifp;
+    int mc_count = 0;
+    struct ifmultiaddr *ifma;
+    struct ecore_mcast_list_elem *mc_mac;
 
-    mc_count = if_multiaddr_count(ifp, -1);/* XXX they don't have a limit */
-    if (!mc_count)
-        return (0);
+    CK_STAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link) {
+        if (ifma->ifma_addr->sa_family != AF_LINK) {
+            continue;
+        }
 
-    mta = malloc(sizeof(unsigned char) * ETHER_ADDR_LEN *
-            mc_count, M_DEVBUF, M_NOWAIT);
-
-    if(mta == NULL) {
-        BLOGE(sc, "Failed to allocate temp mcast list\n");
-        return (-1);
+        mc_count++;
     }
-    bzero(mta, (sizeof(unsigned char) * ETHER_ADDR_LEN * mc_count));
-    
-    mc_mac = malloc(sizeof(*mc_mac) * mc_count, M_DEVBUF, (M_NOWAIT | M_ZERO));
-    mc_mac_start = mc_mac;
 
+    ECORE_LIST_INIT(&p->mcast_list);
+    p->mcast_list_len = 0;
+
+    if (!mc_count) {
+        return (0);
+    }
+
+    mc_mac = malloc(sizeof(*mc_mac) * mc_count, M_DEVBUF,
+                    (M_NOWAIT | M_ZERO));
     if (!mc_mac) {
-        free(mta, M_DEVBUF);
         BLOGE(sc, "Failed to allocate temp mcast list\n");
         return (-1);
     }
     bzero(mc_mac, (sizeof(*mc_mac) * mc_count));
 
-    /* mta and mcnt not expected to be  different */
-    if_multiaddr_array(ifp, mta, &mcnt, mc_count);
+    CK_STAILQ_FOREACH(ifma, &ifp->if_multiaddrs, ifma_link) {
+        if (ifma->ifma_addr->sa_family != AF_LINK) {
+            continue;
+        }
 
-
-    rparam.mcast_obj = &sc->mcast_obj;
-    ECORE_LIST_INIT(&rparam.mcast_list);
-
-    for(i=0; i< mcnt; i++) {
-
-        mc_mac->mac = (uint8_t *)(mta + (i * ETHER_ADDR_LEN));
-        ECORE_LIST_PUSH_TAIL(&mc_mac->link, &rparam.mcast_list);
+        mc_mac->mac = (uint8_t *)LLADDR((struct sockaddr_dl *)ifma->ifma_addr);
+        ECORE_LIST_PUSH_TAIL(&mc_mac->link, &p->mcast_list);
 
         BLOGD(sc, DBG_LOAD,
-              "Setting MCAST %02X:%02X:%02X:%02X:%02X:%02X\n",
+              "Setting MCAST %02X:%02X:%02X:%02X:%02X:%02X and mc_count %d\n",
               mc_mac->mac[0], mc_mac->mac[1], mc_mac->mac[2],
-              mc_mac->mac[3], mc_mac->mac[4], mc_mac->mac[5]);
-
-        mc_mac++;
+              mc_mac->mac[3], mc_mac->mac[4], mc_mac->mac[5], mc_count);
+       mc_mac++;
     }
-    rparam.mcast_list_len = mc_count;
+
+    p->mcast_list_len = mc_count;
+
+    return (0);
+}
+
+static void
+bxe_free_mcast_macs_list(struct ecore_mcast_ramrod_params *p)
+{
+    struct ecore_mcast_list_elem *mc_mac =
+        ECORE_LIST_FIRST_ENTRY(&p->mcast_list,
+                               struct ecore_mcast_list_elem,
+                               link);
+
+    if (mc_mac) {
+        /* only a single free as all mc_macs are in the same heap array */
+        free(mc_mac, M_DEVBUF);
+    }
+}
+static int
+bxe_set_mc_list(struct bxe_softc *sc)
+{
+    struct ecore_mcast_ramrod_params rparam = { NULL };
+    int rc = 0;
+
+    rparam.mcast_obj = &sc->mcast_obj;
 
     BXE_MCAST_LOCK(sc);
 
@@ -11993,9 +12074,16 @@ bxe_set_mc_list(struct bxe_softc *sc)
     rc = ecore_config_mcast(sc, &rparam, ECORE_MCAST_CMD_DEL);
     if (rc < 0) {
         BLOGE(sc, "Failed to clear multicast configuration: %d\n", rc);
+        /* Manual backport parts of FreeBSD upstream r284470. */
         BXE_MCAST_UNLOCK(sc);
-    	free(mc_mac_start, M_DEVBUF);
-        free(mta, M_DEVBUF);
+        return (rc);
+    }
+
+    /* configure a new MACs list */
+    rc = bxe_init_mcast_macs_list(sc, &rparam);
+    if (rc) {
+        BLOGE(sc, "Failed to create mcast MACs list (%d)\n", rc);
+        BXE_MCAST_UNLOCK(sc);
         return (rc);
     }
 
@@ -12005,10 +12093,9 @@ bxe_set_mc_list(struct bxe_softc *sc)
         BLOGE(sc, "Failed to set new mcast config (%d)\n", rc);
     }
 
-    BXE_MCAST_UNLOCK(sc);
+    bxe_free_mcast_macs_list(&rparam);
 
-    free(mc_mac_start, M_DEVBUF);
-    free(mta, M_DEVBUF);
+    BXE_MCAST_UNLOCK(sc);
 
     return (rc);
 }
@@ -12043,7 +12130,7 @@ bxe_set_uc_list(struct bxe_softc *sc)
     ifa = if_getifaddr(ifp); /* XXX Is this structure */
     while (ifa) {
         if (ifa->ifa_addr->sa_family != AF_LINK) {
-            ifa = TAILQ_NEXT(ifa, ifa_link);
+            ifa = CK_STAILQ_NEXT(ifa, ifa_link);
             continue;
         }
 
@@ -12063,7 +12150,7 @@ bxe_set_uc_list(struct bxe_softc *sc)
             return (rc);
         }
 
-        ifa = TAILQ_NEXT(ifa, ifa_link);
+        ifa = CK_STAILQ_NEXT(ifa, ifa_link);
     }
 
 #if __FreeBSD_version < 800000
@@ -12641,6 +12728,7 @@ bxe_init_ifnet(struct bxe_softc *sc)
     ifmedia_set(&sc->ifmedia, (IFM_ETHER | IFM_AUTO));
 
     sc->ifmedia.ifm_media = sc->ifmedia.ifm_cur->ifm_media; /* XXX ? */
+	BLOGI(sc, "IFMEDIA flags : %x\n", sc->ifmedia.ifm_media);
 
     /* allocate the ifnet structure */
     if ((ifp = if_gethandle(IFT_ETHER)) == NULL) {
@@ -12702,6 +12790,9 @@ bxe_init_ifnet(struct bxe_softc *sc)
 
     /* attach to the Ethernet interface list */
     ether_ifattach(ifp, sc->link_params.mac_addr);
+
+    /* Attach driver netdump methods. */
+    NETDUMP_SET(ifp, bxe);
 
     return (0);
 }
@@ -13989,6 +14080,8 @@ bxe_link_settings_supported(struct bxe_softc *sc,
 
     BLOGD(sc, DBG_LOAD, "PHY supported 0=0x%08x 1=0x%08x\n",
           sc->port.supported[0], sc->port.supported[1]);
+	ELINK_DEBUG_P2(sc, "PHY supported 0=0x%08x 1=0x%08x\n",
+					sc->port.supported[0], sc->port.supported[1]);
 }
 
 static void
@@ -14053,6 +14146,8 @@ bxe_link_settings_requested(struct bxe_softc *sc)
                 sc->link_params.req_duplex[idx] = DUPLEX_HALF;
                 sc->port.advertising[idx] |= (ADVERTISED_10baseT_Half |
                                               ADVERTISED_TP);
+				ELINK_DEBUG_P1(sc, "driver requesting DUPLEX_HALF req_duplex = %x!\n",
+								sc->link_params.req_duplex[idx]);
             } else {
                 BLOGE(sc, "Invalid NVRAM config link_config=0x%08x "
                           "speed_cap_mask=0x%08x\n",
@@ -14157,6 +14252,11 @@ bxe_link_settings_requested(struct bxe_softc *sc)
               sc->link_params.req_duplex[idx],
               sc->link_params.req_flow_ctrl[idx],
               sc->port.advertising[idx]);
+		ELINK_DEBUG_P3(sc, "req_line_speed=%d req_duplex=%d "
+						"advertising=0x%x\n",
+						sc->link_params.req_line_speed[idx],
+						sc->link_params.req_duplex[idx],
+						sc->port.advertising[idx]);
     }
 }
 
@@ -14169,11 +14269,12 @@ bxe_get_phy_info(struct bxe_softc *sc)
 
     /* shmem data already read in bxe_get_shmem_info() */
 
-    BLOGD(sc, DBG_LOAD, "lane_config=0x%08x speed_cap_mask0=0x%08x "
+    ELINK_DEBUG_P3(sc, "lane_config=0x%08x speed_cap_mask0=0x%08x "
                         "link_config0=0x%08x\n",
                sc->link_params.lane_config,
                sc->link_params.speed_cap_mask[0],
                sc->port.link_config[0]);
+     
 
     bxe_link_settings_supported(sc, sc->link_params.switch_cfg);
     bxe_link_settings_requested(sc);
@@ -14204,6 +14305,7 @@ bxe_get_phy_info(struct bxe_softc *sc)
 
     /* get the media type */
     bxe_media_detect(sc);
+	ELINK_DEBUG_P1(sc, "detected media type\n", sc->media);
 }
 
 static void
@@ -15559,6 +15661,86 @@ bxe_sysctl_eth_q_stat(SYSCTL_HANDLER_ARGS)
     return (sysctl_handle_64(oidp, &value, 0, req));
 }
 
+static void bxe_force_link_reset(struct bxe_softc *sc)
+{
+
+        bxe_acquire_phy_lock(sc);
+        elink_link_reset(&sc->link_params, &sc->link_vars, 1);
+        bxe_release_phy_lock(sc);
+}
+
+static int
+bxe_sysctl_pauseparam(SYSCTL_HANDLER_ARGS)
+{
+        struct bxe_softc *sc = (struct bxe_softc *)arg1;;
+        uint32_t cfg_idx = bxe_get_link_cfg_idx(sc);
+        int rc = 0;
+        int error;
+        int result;
+
+
+        error = sysctl_handle_int(oidp, &sc->bxe_pause_param, 0, req);
+
+        if (error || !req->newptr) {
+                return (error);
+        }
+        if ((sc->bxe_pause_param < 0) ||  (sc->bxe_pause_param > 8)) {
+                BLOGW(sc, "invalid pause param (%d) - use intergers between 1 & 8\n",sc->bxe_pause_param);
+                sc->bxe_pause_param = 8;
+        }
+
+        result = (sc->bxe_pause_param << PORT_FEATURE_FLOW_CONTROL_SHIFT);
+
+
+        if((result & 0x400) && !(sc->port.supported[cfg_idx] & ELINK_SUPPORTED_Autoneg))  {
+                        BLOGW(sc, "Does not support Autoneg pause_param %d\n", sc->bxe_pause_param);
+                        return -EINVAL;
+        }
+
+        if(IS_MF(sc))
+                return 0;
+       sc->link_params.req_flow_ctrl[cfg_idx] = ELINK_FLOW_CTRL_AUTO;
+        if(result & ELINK_FLOW_CTRL_RX)
+                sc->link_params.req_flow_ctrl[cfg_idx] |= ELINK_FLOW_CTRL_RX;
+
+        if(result & ELINK_FLOW_CTRL_TX)
+                sc->link_params.req_flow_ctrl[cfg_idx] |= ELINK_FLOW_CTRL_TX;
+        if(sc->link_params.req_flow_ctrl[cfg_idx] == ELINK_FLOW_CTRL_AUTO)
+                sc->link_params.req_flow_ctrl[cfg_idx] = ELINK_FLOW_CTRL_NONE;
+
+        if(result & 0x400) {
+                if (sc->link_params.req_line_speed[cfg_idx] == ELINK_SPEED_AUTO_NEG) {
+                        sc->link_params.req_flow_ctrl[cfg_idx] =
+                                ELINK_FLOW_CTRL_AUTO;
+                }
+                sc->link_params.req_fc_auto_adv = 0;
+                if (result & ELINK_FLOW_CTRL_RX)
+                        sc->link_params.req_fc_auto_adv |= ELINK_FLOW_CTRL_RX;
+
+                if (result & ELINK_FLOW_CTRL_TX)
+                        sc->link_params.req_fc_auto_adv |= ELINK_FLOW_CTRL_TX;
+                if (!sc->link_params.req_fc_auto_adv)
+                        sc->link_params.req_fc_auto_adv |= ELINK_FLOW_CTRL_NONE;
+        }
+         if (IS_PF(sc)) {
+                        if (sc->link_vars.link_up) {
+                                bxe_stats_handle(sc, STATS_EVENT_STOP);
+                        }
+			if (if_getdrvflags(sc->ifp) & IFF_DRV_RUNNING) {
+                        bxe_force_link_reset(sc);
+                        bxe_acquire_phy_lock(sc);
+
+                        rc = elink_phy_init(&sc->link_params, &sc->link_vars);
+
+                        bxe_release_phy_lock(sc);
+
+                        bxe_calc_fc_adv(sc);
+                        }
+        }
+        return rc;
+}
+
+
 static void
 bxe_add_sysctls(struct bxe_softc *sc)
 {
@@ -15658,6 +15840,12 @@ bxe_add_sysctls(struct bxe_softc *sc)
     SYSCTL_ADD_UINT(ctx, children, OID_AUTO, "rx_budget",
                     CTLFLAG_RW, &sc->rx_budget, 0,
                     "rx processing budget");
+
+   SYSCTL_ADD_PROC(ctx, children, OID_AUTO, "pause_param",
+                    CTLTYPE_UINT | CTLFLAG_RW, sc, 0,
+                    bxe_sysctl_pauseparam, "IU",
+                    "need pause frames- DEF:0/TX:1/RX:2/BOTH:3/AUTO:4/AUTOTX:5/AUTORX:6/AUTORXTX:7/NONE:8");
+
 
     SYSCTL_ADD_PROC(ctx, children, OID_AUTO, "state",
                     CTLTYPE_UINT | CTLFLAG_RW, sc, 0,
@@ -17993,6 +18181,7 @@ bxe_reset_port(struct bxe_softc *sc)
     int port = SC_PORT(sc);
     uint32_t val;
 
+	ELINK_DEBUG_P0(sc, "bxe_reset_port called\n");
     /* reset physical Link */
     bxe_link_reset(sc);
 
@@ -18495,8 +18684,6 @@ bxe_grc_dump(struct bxe_softc *sc)
     uint32_t reg_val;
     uint32_t reg_addr;
     uint32_t cmd_offset;
-    int context_size;
-    int allocated;
     struct ecore_ilt *ilt = SC_ILT(sc);
     struct bxe_fastpath *fp;
     struct ilt_client_info *ilt_cli;
@@ -18591,67 +18778,80 @@ bxe_grc_dump(struct bxe_softc *sc)
     bxe_pretend_func(sc, SC_ABS_FUNC(sc));
 
 
-    context_size = (sizeof(union cdu_context) * BXE_L2_CID_COUNT(sc));
-    for (i = 0, allocated = 0; allocated < context_size; i++) {
 
-        BLOGI(sc, "cdu_context i %d paddr %#jx vaddr %p size 0x%zx\n", i,
-            (uintmax_t)sc->context[i].vcxt_dma.paddr,
-            sc->context[i].vcxt_dma.vaddr,
-            sc->context[i].size);
-        allocated += sc->context[i].size;
-    }
-    BLOGI(sc, "fw stats start_paddr %#jx end_paddr %#jx vaddr %p size 0x%x\n",
-        (uintmax_t)sc->fw_stats_req_mapping,
-        (uintmax_t)sc->fw_stats_data_mapping,
-        sc->fw_stats_req, (sc->fw_stats_req_size + sc->fw_stats_data_size));
-    BLOGI(sc, "def_status_block paddr %p vaddr %p size 0x%zx\n",
-        (void *)sc->def_sb_dma.paddr, sc->def_sb,
-        sizeof(struct host_sp_status_block));
-    BLOGI(sc, "event_queue paddr %#jx vaddr %p size 0x%x\n",
-        (uintmax_t)sc->eq_dma.paddr, sc->eq_dma.vaddr, BCM_PAGE_SIZE);
-    BLOGI(sc, "slow path paddr %#jx vaddr %p size 0x%zx\n",
-        (uintmax_t)sc->sp_dma.paddr, sc->sp_dma.vaddr,
-        sizeof(struct bxe_slowpath));
-    BLOGI(sc, "slow path queue paddr %#jx vaddr %p size 0x%x\n",
-        (uintmax_t)sc->spq_dma.paddr, sc->spq_dma.vaddr, BCM_PAGE_SIZE);
-    BLOGI(sc, "fw_buf paddr %#jx vaddr %p size 0x%x\n",
-        (uintmax_t)sc->gz_buf_dma.paddr, sc->gz_buf_dma.vaddr,
-        FW_BUF_SIZE);
-    for (i = 0; i < sc->num_queues; i++) {
-        fp = &sc->fp[i];
-        BLOGI(sc, "FP status block fp %d paddr %#jx vaddr %p size 0x%zx\n", i,
-            (uintmax_t)fp->sb_dma.paddr, fp->sb_dma.vaddr,
-            sizeof(union bxe_host_hc_status_block));
-        BLOGI(sc, "TX BD CHAIN fp %d paddr %#jx vaddr %p size 0x%x\n", i,
-            (uintmax_t)fp->tx_dma.paddr, fp->tx_dma.vaddr,
-            (BCM_PAGE_SIZE * TX_BD_NUM_PAGES));
-        BLOGI(sc, "RX BD CHAIN fp %d paddr %#jx vaddr %p size 0x%x\n", i,
-            (uintmax_t)fp->rx_dma.paddr, fp->rx_dma.vaddr,
-            (BCM_PAGE_SIZE * RX_BD_NUM_PAGES));
-        BLOGI(sc, "RX RCQ CHAIN fp %d paddr %#jx vaddr %p size 0x%zx\n", i,
-            (uintmax_t)fp->rcq_dma.paddr, fp->rcq_dma.vaddr,
-            (BCM_PAGE_SIZE * RCQ_NUM_PAGES));
-        BLOGI(sc, "RX SGE CHAIN fp %d paddr %#jx vaddr %p size 0x%x\n", i,
-            (uintmax_t)fp->rx_sge_dma.paddr, fp->rx_sge_dma.vaddr,
-            (BCM_PAGE_SIZE * RX_SGE_NUM_PAGES));
-    }
+    if(sc->state == BXE_STATE_OPEN) {
+        if(sc->fw_stats_req  != NULL) {
+    		BLOGI(sc, "fw stats start_paddr %#jx end_paddr %#jx vaddr %p size 0x%x\n",
+        			(uintmax_t)sc->fw_stats_req_mapping,
+        			(uintmax_t)sc->fw_stats_data_mapping,
+        			sc->fw_stats_req, (sc->fw_stats_req_size + sc->fw_stats_data_size));
+		}	
+		if(sc->def_sb != NULL) {
+			BLOGI(sc, "def_status_block paddr %p vaddr %p size 0x%zx\n",
+        			(void *)sc->def_sb_dma.paddr, sc->def_sb,
+        			sizeof(struct host_sp_status_block));
+		}
+		if(sc->eq_dma.vaddr != NULL) {
+    		BLOGI(sc, "event_queue paddr %#jx vaddr %p size 0x%x\n",
+        			(uintmax_t)sc->eq_dma.paddr, sc->eq_dma.vaddr, BCM_PAGE_SIZE);
+		}
+		if(sc->sp_dma.vaddr != NULL) {
+    		BLOGI(sc, "slow path paddr %#jx vaddr %p size 0x%zx\n",
+        			(uintmax_t)sc->sp_dma.paddr, sc->sp_dma.vaddr,
+        			sizeof(struct bxe_slowpath));
+		}
+		if(sc->spq_dma.vaddr != NULL) {
+    		BLOGI(sc, "slow path queue paddr %#jx vaddr %p size 0x%x\n",
+        			(uintmax_t)sc->spq_dma.paddr, sc->spq_dma.vaddr, BCM_PAGE_SIZE);
+		}
+		if(sc->gz_buf_dma.vaddr != NULL) {
+    		BLOGI(sc, "fw_buf paddr %#jx vaddr %p size 0x%x\n",
+        			(uintmax_t)sc->gz_buf_dma.paddr, sc->gz_buf_dma.vaddr,
+        			FW_BUF_SIZE);
+		}
+    	for (i = 0; i < sc->num_queues; i++) {
+        	fp = &sc->fp[i];
+			if(fp->sb_dma.vaddr != NULL && fp->tx_dma.vaddr != NULL &&
+                        fp->rx_dma.vaddr != NULL && fp->rcq_dma.vaddr != NULL &&
+                        fp->rx_sge_dma.vaddr != NULL) {
 
-    ilt_cli = &ilt->clients[1];
-    for (i = ilt_cli->start; i <= ilt_cli->end; i++) {
-        BLOGI(sc, "ECORE_ILT paddr %#jx vaddr %p size 0x%x\n",
-            (uintmax_t)(((struct bxe_dma *)((&ilt->lines[i])->page))->paddr),
-            ((struct bxe_dma *)((&ilt->lines[i])->page))->vaddr, BCM_PAGE_SIZE);
-    }
+				BLOGI(sc, "FP status block fp %d paddr %#jx vaddr %p size 0x%zx\n", i,
+            			(uintmax_t)fp->sb_dma.paddr, fp->sb_dma.vaddr,
+            			sizeof(union bxe_host_hc_status_block));
+				BLOGI(sc, "TX BD CHAIN fp %d paddr %#jx vaddr %p size 0x%x\n", i,
+            			(uintmax_t)fp->tx_dma.paddr, fp->tx_dma.vaddr,
+            			(BCM_PAGE_SIZE * TX_BD_NUM_PAGES));
+        		BLOGI(sc, "RX BD CHAIN fp %d paddr %#jx vaddr %p size 0x%x\n", i,
+            			(uintmax_t)fp->rx_dma.paddr, fp->rx_dma.vaddr,
+            			(BCM_PAGE_SIZE * RX_BD_NUM_PAGES));
+        		BLOGI(sc, "RX RCQ CHAIN fp %d paddr %#jx vaddr %p size 0x%zx\n", i,
+            			(uintmax_t)fp->rcq_dma.paddr, fp->rcq_dma.vaddr,
+            			(BCM_PAGE_SIZE * RCQ_NUM_PAGES));
+        		BLOGI(sc, "RX SGE CHAIN fp %d paddr %#jx vaddr %p size 0x%x\n", i,
+            			(uintmax_t)fp->rx_sge_dma.paddr, fp->rx_sge_dma.vaddr,
+            			(BCM_PAGE_SIZE * RX_SGE_NUM_PAGES));
+    		}
+		}
+		if(ilt != NULL ) {
+    		ilt_cli = &ilt->clients[1];
+			if(ilt->lines != NULL) {
+    		for (i = ilt_cli->start; i <= ilt_cli->end; i++) {
+        		BLOGI(sc, "ECORE_ILT paddr %#jx vaddr %p size 0x%x\n",
+            			(uintmax_t)(((struct bxe_dma *)((&ilt->lines[i])->page))->paddr),
+            			((struct bxe_dma *)((&ilt->lines[i])->page))->vaddr, BCM_PAGE_SIZE);
+    		}
+			}
+		}
 
 
-    cmd_offset = DMAE_REG_CMD_MEM;
-    for (i = 0; i < 224; i++) {
-        reg_addr = (cmd_offset +(i * 4));
-        reg_val = REG_RD(sc, reg_addr);
-        BLOGI(sc, "DMAE_REG_CMD_MEM i=%d reg_addr 0x%x reg_val 0x%08x\n",i,
-            reg_addr, reg_val);
-    }
-
+    	cmd_offset = DMAE_REG_CMD_MEM;
+    	for (i = 0; i < 224; i++) {
+        	reg_addr = (cmd_offset +(i * 4));
+        	reg_val = REG_RD(sc, reg_addr);
+        	BLOGI(sc, "DMAE_REG_CMD_MEM i=%d reg_addr 0x%x reg_val 0x%08x\n",i,
+            			reg_addr, reg_val);
+    	}
+	}
 
     BLOGI(sc, "Collection of grcdump done\n");
     sc->grcdump_done = 1;
@@ -18991,3 +19191,57 @@ bxe_eioctl(struct cdev *dev, u_long cmd, caddr_t data, int fflag,
 
     return (rval);
 }
+
+#ifdef NETDUMP
+static void
+bxe_netdump_init(struct ifnet *ifp, int *nrxr, int *ncl, int *clsize)
+{
+	struct bxe_softc *sc;
+
+	sc = if_getsoftc(ifp);
+	BXE_CORE_LOCK(sc);
+	*nrxr = sc->num_queues;
+	*ncl = NETDUMP_MAX_IN_FLIGHT;
+	*clsize = sc->fp[0].mbuf_alloc_size;
+	BXE_CORE_UNLOCK(sc);
+}
+
+static void
+bxe_netdump_event(struct ifnet *ifp __unused, enum netdump_ev event __unused)
+{
+}
+
+static int
+bxe_netdump_transmit(struct ifnet *ifp, struct mbuf *m)
+{
+	struct bxe_softc *sc;
+	int error;
+
+	sc = if_getsoftc(ifp);
+	if ((if_getdrvflags(ifp) & (IFF_DRV_RUNNING | IFF_DRV_OACTIVE)) !=
+	    IFF_DRV_RUNNING || !sc->link_vars.link_up)
+		return (ENOENT);
+
+	error = bxe_tx_encap(&sc->fp[0], &m);
+	if (error != 0 && m != NULL)
+		m_freem(m);
+	return (error);
+}
+
+static int
+bxe_netdump_poll(struct ifnet *ifp, int count)
+{
+	struct bxe_softc *sc;
+	int i;
+
+	sc = if_getsoftc(ifp);
+	if ((if_getdrvflags(ifp) & IFF_DRV_RUNNING) == 0 ||
+	    !sc->link_vars.link_up)
+		return (ENOENT);
+
+	for (i = 0; i < sc->num_queues; i++)
+		(void)bxe_rxeof(sc, &sc->fp[i]);
+	(void)bxe_txeof(sc, &sc->fp[0]);
+	return (0);
+}
+#endif /* NETDUMP */

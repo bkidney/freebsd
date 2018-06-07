@@ -30,6 +30,7 @@
  * SUCH DAMAGE.
  */
 
+#include "opt_acpi.h"
 #include "opt_platform.h"
 
 #include <sys/cdefs.h>
@@ -63,12 +64,18 @@ __FBSDID("$FreeBSD$");
 #include <dev/ofw/ofw_bus_subr.h>
 #endif
 
+#ifdef DEV_ACPI
+#include <contrib/dev/acpica/include/acpi.h>
+#include <dev/acpica/acpivar.h>
+#endif
+
 #include "pic_if.h"
 
 #include <arm/arm/gic_common.h>
 #include "gic_v3_reg.h"
 #include "gic_v3_var.h"
 
+static bus_get_domain_t gic_v3_get_domain;
 static bus_read_ivar_t gic_v3_read_ivar;
 
 static pic_disable_intr_t gic_v3_disable_intr;
@@ -97,6 +104,7 @@ static device_method_t gic_v3_methods[] = {
 	DEVMETHOD(device_detach,	gic_v3_detach),
 
 	/* Bus interface */
+	DEVMETHOD(bus_get_domain,	gic_v3_get_domain),
 	DEVMETHOD(bus_read_ivar,	gic_v3_read_ivar),
 
 	/* Interrupt controller interface */
@@ -341,12 +349,25 @@ gic_v3_detach(device_t dev)
 	for (rid = 0; rid < (sc->gic_redists.nregions + 1); rid++)
 		bus_release_resource(dev, SYS_RES_MEMORY, rid, sc->gic_res[rid]);
 
-	for (i = 0; i < mp_ncpus; i++)
+	for (i = 0; i <= mp_maxid; i++)
 		free(sc->gic_redists.pcpu[i], M_GIC_V3);
 
 	free(sc->gic_res, M_GIC_V3);
 	free(sc->gic_redists.regions, M_GIC_V3);
 
+	return (0);
+}
+
+static int
+gic_v3_get_domain(device_t dev, device_t child, int *domain)
+{
+	struct gic_v3_devinfo *di;
+
+	di = device_get_ivars(child);
+	if (di->gic_domain < 0)
+		return (ENOENT);
+
+	*domain = di->gic_domain;
 	return (0);
 }
 
@@ -359,7 +380,7 @@ gic_v3_read_ivar(device_t dev, device_t child, int which, uintptr_t *result)
 
 	switch (which) {
 	case GICV3_IVAR_NIRQS:
-		*result = sc->gic_nirqs;
+		*result = (NIRQ - sc->gic_nirqs) / sc->gic_nchildren;
 		return (0);
 	case GICV3_IVAR_REDIST_VADDR:
 		*result = (uintptr_t)rman_get_virtual(
@@ -393,9 +414,7 @@ arm_gic_v3_intr(void *arg)
 	struct intr_pic *pic;
 	uint64_t active_irq;
 	struct trapframe *tf;
-	bool first;
 
-	first = true;
 	pic = sc->gic_pic;
 
 	while (1) {
@@ -437,11 +456,11 @@ arm_gic_v3_intr(void *arg)
 #endif
 		} else if (active_irq >= GIC_FIRST_PPI &&
 		    active_irq <= GIC_LAST_SPI) {
-			if (gi->gi_pol == INTR_TRIGGER_EDGE)
+			if (gi->gi_trig == INTR_TRIGGER_EDGE)
 				gic_icc_write(EOIR1, gi->gi_irq);
 
 			if (intr_isrc_dispatch(&gi->gi_isrc, tf) != 0) {
-				if (gi->gi_pol != INTR_TRIGGER_EDGE)
+				if (gi->gi_trig != INTR_TRIGGER_EDGE)
 					gic_icc_write(EOIR1, gi->gi_irq);
 				gic_v3_disable_intr(sc->dev, &gi->gi_isrc);
 				device_printf(sc->dev,
@@ -557,6 +576,9 @@ do_gic_v3_map_intr(device_t dev, struct intr_map_data *data, u_int *irqp,
 #ifdef FDT
 	struct intr_map_data_fdt *daf;
 #endif
+#ifdef DEV_ACPI
+	struct intr_map_data_acpi *daa;
+#endif
 	u_int irq;
 
 	sc = device_get_softc(dev);
@@ -568,6 +590,14 @@ do_gic_v3_map_intr(device_t dev, struct intr_map_data *data, u_int *irqp,
 		if (gic_map_fdt(dev, daf->ncells, daf->cells, &irq, &pol,
 		    &trig) != 0)
 			return (EINVAL);
+		break;
+#endif
+#ifdef DEV_ACPI
+	case INTR_MAP_DATA_ACPI:
+		daa = (struct intr_map_data_acpi *)data;
+		irq = daa->irq;
+		pol = daa->pol;
+		trig = daa->trig;
 		break;
 #endif
 	case INTR_MAP_DATA_MSI:
@@ -781,7 +811,7 @@ gic_v3_post_filter(device_t dev, struct intr_irqsrc *isrc)
 {
 	struct gic_v3_irqsrc *gi = (struct gic_v3_irqsrc *)isrc;
 
-	if (gi->gi_pol == INTR_TRIGGER_EDGE)
+	if (gi->gi_trig == INTR_TRIGGER_EDGE)
 		return;
 
 	gic_icc_write(EOIR1, gi->gi_irq);
@@ -880,7 +910,7 @@ gic_v3_ipi_send(device_t dev, struct intr_irqsrc *isrc, cpuset_t cpus,
 	val = 0;
 
 	/* Iterate through all CPUs in set */
-	for (i = 0; i < mp_ncpus; i++) {
+	for (i = 0; i <= mp_maxid; i++) {
 		/* Move to the next affinity group */
 		if (aff != GIC_AFFINITY(i)) {
 			/* Send the IPI */
@@ -1088,7 +1118,7 @@ gic_v3_redist_alloc(struct gic_v3_softc *sc)
 	u_int cpuid;
 
 	/* Allocate struct resource for all CPU's Re-Distributor registers */
-	for (cpuid = 0; cpuid < mp_ncpus; cpuid++)
+	for (cpuid = 0; cpuid <= mp_maxid; cpuid++)
 		if (CPU_ISSET(cpuid, &all_cpus) != 0)
 			sc->gic_redists.pcpu[cpuid] =
 				malloc(sizeof(*sc->gic_redists.pcpu[0]),

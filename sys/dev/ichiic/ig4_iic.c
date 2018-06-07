@@ -522,22 +522,41 @@ ig4iic_attach(ig4iic_softc_t *sc)
 	int error;
 	uint32_t v;
 
-	v = reg_read(sc, IG4_REG_COMP_TYPE);
-	v = reg_read(sc, IG4_REG_COMP_PARAM1);
-	v = reg_read(sc, IG4_REG_GENERAL);
-	if ((v & IG4_GENERAL_SWMODE) == 0) {
-		v |= IG4_GENERAL_SWMODE;
-		reg_write(sc, IG4_REG_GENERAL, v);
+	mtx_init(&sc->io_lock, "IG4 I/O lock", NULL, MTX_DEF);
+	sx_init(&sc->call_lock, "IG4 call lock");
+
+	if (sc->version == IG4_ATOM)
+		v = reg_read(sc, IG4_REG_COMP_TYPE);
+	
+	if (sc->version == IG4_HASWELL || sc->version == IG4_ATOM) {
+		v = reg_read(sc, IG4_REG_COMP_PARAM1);
 		v = reg_read(sc, IG4_REG_GENERAL);
+		/*
+		 * The content of IG4_REG_GENERAL is different for each
+		 * controller version.
+		 */
+		if (sc->version == IG4_HASWELL &&
+		    (v & IG4_GENERAL_SWMODE) == 0) {
+			v |= IG4_GENERAL_SWMODE;
+			reg_write(sc, IG4_REG_GENERAL, v);
+			v = reg_read(sc, IG4_REG_GENERAL);
+		}
 	}
 
-	v = reg_read(sc, IG4_REG_SW_LTR_VALUE);
-	v = reg_read(sc, IG4_REG_AUTO_LTR_VALUE);
+	if (sc->version == IG4_HASWELL) {
+		v = reg_read(sc, IG4_REG_SW_LTR_VALUE);
+		v = reg_read(sc, IG4_REG_AUTO_LTR_VALUE);
+	} else if (sc->version == IG4_SKYLAKE) {
+		v = reg_read(sc, IG4_REG_ACTIVE_LTR_VALUE);
+		v = reg_read(sc, IG4_REG_IDLE_LTR_VALUE);
+	}
 
-	v = reg_read(sc, IG4_REG_COMP_VER);
-	if (v != IG4_COMP_VER) {
-		error = ENXIO;
-		goto done;
+	if (sc->version == IG4_HASWELL || sc->version == IG4_ATOM) {
+		v = reg_read(sc, IG4_REG_COMP_VER);
+		if (v != IG4_COMP_VER) {
+			error = ENXIO;
+			goto done;
+		}
 	}
 	v = reg_read(sc, IG4_REG_SS_SCL_HCNT);
 	v = reg_read(sc, IG4_REG_SS_SCL_LCNT);
@@ -588,8 +607,13 @@ ig4iic_attach(ig4iic_softc_t *sc)
 	/*
 	 * Don't do this, it blows up the PCI config
 	 */
-	reg_write(sc, IG4_REG_RESETS, IG4_RESETS_ASSERT);
-	reg_write(sc, IG4_REG_RESETS, IG4_RESETS_DEASSERT);
+	if (sc->version == IG4_HASWELL || sc->version == IG4_ATOM) {
+		reg_write(sc, IG4_REG_RESETS_HSW, IG4_RESETS_ASSERT_HSW);
+		reg_write(sc, IG4_REG_RESETS_HSW, IG4_RESETS_DEASSERT_HSW);
+	} else if (sc->version = IG4_SKYLAKE) {
+		reg_write(sc, IG4_REG_RESETS_SKL, IG4_RESETS_ASSERT_SKL);
+		reg_write(sc, IG4_REG_RESETS_SKL, IG4_RESETS_DEASSERT_SKL);
+	}
 #endif
 
 	mtx_lock(&sc->io_lock);
@@ -664,6 +688,10 @@ ig4iic_detach(ig4iic_softc_t *sc)
 
 	mtx_unlock(&sc->io_lock);
 	sx_xunlock(&sc->call_lock);
+
+	mtx_destroy(&sc->io_lock);
+	sx_destroy(&sc->call_lock);
+
 	return (0);
 }
 
@@ -720,15 +748,29 @@ ig4iic_dump(ig4iic_softc_t *sc)
 	REGDUMP(sc, IG4_REG_DMA_RDLR);
 	REGDUMP(sc, IG4_REG_SDA_SETUP);
 	REGDUMP(sc, IG4_REG_ENABLE_STATUS);
-	REGDUMP(sc, IG4_REG_COMP_PARAM1);
-	REGDUMP(sc, IG4_REG_COMP_VER);
-	REGDUMP(sc, IG4_REG_COMP_TYPE);
-	REGDUMP(sc, IG4_REG_CLK_PARMS);
-	REGDUMP(sc, IG4_REG_RESETS);
-	REGDUMP(sc, IG4_REG_GENERAL);
-	REGDUMP(sc, IG4_REG_SW_LTR_VALUE);
-	REGDUMP(sc, IG4_REG_AUTO_LTR_VALUE);
+	if (sc->version == IG4_HASWELL || sc->version == IG4_ATOM) {
+		REGDUMP(sc, IG4_REG_COMP_PARAM1);
+		REGDUMP(sc, IG4_REG_COMP_VER);
+	}
+	if (sc->version == IG4_ATOM) {
+		REGDUMP(sc, IG4_REG_COMP_TYPE);
+		REGDUMP(sc, IG4_REG_CLK_PARMS);
+	}
+	if (sc->version == IG4_HASWELL || sc->version == IG4_ATOM) {
+		REGDUMP(sc, IG4_REG_RESETS_HSW);
+		REGDUMP(sc, IG4_REG_GENERAL);
+	} else if (sc->version == IG4_SKYLAKE) {
+		REGDUMP(sc, IG4_REG_RESETS_SKL);
+	}
+	if (sc->version == IG4_HASWELL) {
+		REGDUMP(sc, IG4_REG_SW_LTR_VALUE);
+		REGDUMP(sc, IG4_REG_AUTO_LTR_VALUE);
+	} else if (sc->version == IG4_SKYLAKE) {
+		REGDUMP(sc, IG4_REG_ACTIVE_LTR_VALUE);
+		REGDUMP(sc, IG4_REG_IDLE_LTR_VALUE);
+	}
 }
 #undef REGDUMP
 
-DRIVER_MODULE(iicbus, ig4iic, iicbus_driver, iicbus_devclass, NULL, NULL);
+DRIVER_MODULE(iicbus, ig4iic_acpi, iicbus_driver, iicbus_devclass, NULL, NULL);
+DRIVER_MODULE(iicbus, ig4iic_pci, iicbus_driver, iicbus_devclass, NULL, NULL);

@@ -58,8 +58,8 @@
 #endif
 
 /*
- * Prevent speculative execution in busy-wait loops (P4 <=)
- * or "predefined delay".
+ * Prevent speculative execution in busy-wait loops (P4 <=) or "predefined
+ * delay".
  */
 CK_CC_INLINE static void
 ck_pr_stall(void)
@@ -75,18 +75,39 @@ ck_pr_stall(void)
 		__asm__ __volatile__(I ::: "memory");	\
 	}
 
-CK_PR_FENCE(atomic, "sfence")
-CK_PR_FENCE(atomic_store, "sfence")
-CK_PR_FENCE(atomic_load, "mfence")
-CK_PR_FENCE(store_atomic, "sfence")
-CK_PR_FENCE(load_atomic, "mfence")
+/* Atomic operations are always serializing. */
+CK_PR_FENCE(atomic, "")
+CK_PR_FENCE(atomic_store, "")
+CK_PR_FENCE(atomic_load, "")
+CK_PR_FENCE(store_atomic, "")
+CK_PR_FENCE(load_atomic, "")
+
+/* Traditional fence interface. */
 CK_PR_FENCE(load, "lfence")
 CK_PR_FENCE(load_store, "mfence")
 CK_PR_FENCE(store, "sfence")
 CK_PR_FENCE(store_load, "mfence")
 CK_PR_FENCE(memory, "mfence")
+
+/* Below are stdatomic-style fences. */
+
+/*
+ * Provides load-store and store-store ordering. However, Intel specifies that
+ * the WC memory model is relaxed. It is likely an sfence *is* sufficient (in
+ * particular, stores are not re-ordered with respect to prior loads and it is
+ * really just the stores that are subject to re-ordering). However, we take
+ * the conservative route as the manuals are too ambiguous for my taste.
+ */
 CK_PR_FENCE(release, "mfence")
+
+/*
+ * Provides load-load and load-store ordering. The lfence instruction ensures
+ * all prior load operations are complete before any subsequent instructions
+ * actually begin execution. However, the manual also ends up going to describe
+ * WC memory as a relaxed model.
+ */
 CK_PR_FENCE(acquire, "mfence")
+
 CK_PR_FENCE(acqrel, "mfence")
 CK_PR_FENCE(lock, "mfence")
 CK_PR_FENCE(unlock, "mfence")
@@ -132,7 +153,9 @@ CK_PR_FAS(ptr, void, void *, char, "xchgq")
 
 #define CK_PR_FAS_S(S, T, I) CK_PR_FAS(S, T, T, T, I)
 
+#ifndef CK_PR_DISABLE_DOUBLE
 CK_PR_FAS_S(double, double, "xchgq")
+#endif
 CK_PR_FAS_S(char, char, "xchgb")
 CK_PR_FAS_S(uint, unsigned int, "xchgl")
 CK_PR_FAS_S(int, int, "xchgl")
@@ -166,7 +189,9 @@ CK_PR_LOAD(ptr, void, void *, char, "movq")
 CK_PR_LOAD_S(char, char, "movb")
 CK_PR_LOAD_S(uint, unsigned int, "movl")
 CK_PR_LOAD_S(int, int, "movl")
+#ifndef CK_PR_DISABLE_DOUBLE
 CK_PR_LOAD_S(double, double, "movq")
+#endif
 CK_PR_LOAD_S(64, uint64_t, "movq")
 CK_PR_LOAD_S(32, uint32_t, "movl")
 CK_PR_LOAD_S(16, uint16_t, "movw")
@@ -240,7 +265,9 @@ CK_PR_LOAD_2(8, 16, uint8_t)
 	}
 
 CK_PR_STORE_IMM(ptr, void, const void *, char, "movq", CK_CC_IMM_U32)
+#ifndef CK_PR_DISABLE_DOUBLE
 CK_PR_STORE(double, double, double, double, "movq")
+#endif
 
 #define CK_PR_STORE_S(S, T, I, K) CK_PR_STORE_IMM(S, T, T, T, I, K)
 
@@ -404,7 +431,9 @@ CK_PR_CAS(ptr, void, void *, char, "cmpxchgq")
 CK_PR_CAS_S(char, char, "cmpxchgb")
 CK_PR_CAS_S(int, int, "cmpxchgl")
 CK_PR_CAS_S(uint, unsigned int, "cmpxchgl")
+#ifndef CK_PR_DISABLE_DOUBLE
 CK_PR_CAS_S(double, double, "cmpxchgq")
+#endif
 CK_PR_CAS_S(64, uint64_t, "cmpxchgq")
 CK_PR_CAS_S(32, uint32_t, "cmpxchgl")
 CK_PR_CAS_S(16, uint16_t, "cmpxchgw")
@@ -441,7 +470,9 @@ CK_PR_CAS_O(ptr, void, void *, char, "q", "rax")
 CK_PR_CAS_O_S(char, char, "b", "al")
 CK_PR_CAS_O_S(int, int, "l", "eax")
 CK_PR_CAS_O_S(uint, unsigned int, "l", "eax")
+#ifndef CK_PR_DISABLE_DOUBLE
 CK_PR_CAS_O_S(double, double, "q", "rax")
+#endif
 CK_PR_CAS_O_S(64, uint64_t, "q", "rax")
 CK_PR_CAS_O_S(32, uint32_t, "l", "eax")
 CK_PR_CAS_O_S(16, uint16_t, "w", "ax")
@@ -526,7 +557,9 @@ ck_pr_cas_##S##_##W##_value(T *t, T c[W], T s[W], T *v)		\
 				    (uint64_t *)(void *)v);	\
 }
 
+#ifndef CK_PR_DISABLE_DOUBLE
 CK_PR_CAS_V(double, 2, double)
+#endif
 CK_PR_CAS_V(char, 16, char)
 CK_PR_CAS_V(int, 4, int)
 CK_PR_CAS_V(uint, 4, unsigned int)

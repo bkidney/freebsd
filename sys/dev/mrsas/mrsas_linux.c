@@ -46,7 +46,7 @@ __FBSDID("$FreeBSD$");
 #if (__FreeBSD_version >= 1001511)
 #include <sys/capsicum.h>
 #elif (__FreeBSD_version > 900000)
-#include <sys/capabilty.h>
+#include <sys/capability.h>
 #endif
 
 #include <sys/conf.h>
@@ -67,6 +67,7 @@ __FBSDID("$FreeBSD$");
 #include <compat/linux/linux_util.h>
 
 #include <dev/mrsas/mrsas.h>
+#undef COMPAT_FREEBSD32
 #include <dev/mrsas/mrsas_ioctl.h>
 
 /* There are multiple ioctl number ranges that need to be handled */

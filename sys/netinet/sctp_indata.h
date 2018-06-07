@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 2001-2007, by Cisco Systems, Inc. All rights reserved.
  * Copyright (c) 2008-2012, by Randall Stewart. All rights reserved.
  * Copyright (c) 2008-2012, by Michael Tuexen. All rights reserved.
@@ -79,7 +81,7 @@ sctp_build_ctl_nchunk(struct sctp_inpcb *inp,
 void sctp_set_rwnd(struct sctp_tcb *, struct sctp_association *);
 
 uint32_t
-sctp_calc_rwnd(struct sctp_tcb *stcb, struct sctp_association *asoc);
+         sctp_calc_rwnd(struct sctp_tcb *stcb, struct sctp_association *asoc);
 
 void
 sctp_express_handle_sack(struct sctp_tcb *stcb, uint32_t cumack,

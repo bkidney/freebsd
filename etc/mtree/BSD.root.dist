@@ -11,8 +11,12 @@
         defaults
         ..
         dtb
+            overlays              tags=package=runtime
+            ..
         ..
         firmware
+        ..
+        lua
         ..
         kernel
         ..
@@ -29,8 +33,6 @@
         autofs
         ..
         bluetooth
-        ..
-        casper
         ..
         cron.d
         ..
@@ -72,8 +74,6 @@
         ..
         security
         ..
-        skel
-        ..
         ssh
         ..
         ssl
@@ -96,6 +96,8 @@
     media
     ..
     mnt
+    ..
+    net
     ..
     proc            mode=0555
     ..

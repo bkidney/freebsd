@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1982, 1986, 1989, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -73,6 +75,6 @@ struct ext2mount {
 #define	MNINDIR(ump)			((ump)->um_nindir)
 #define	blkptrtodb(ump, b)		((b) << (ump)->um_bptrtodb)
 #define	is_sequential(ump, a, b)	((b) == (a) + ump->um_seqinc)
-#endif /* _KERNEL */
+#endif	/* _KERNEL */
 
 #endif	/* !_FS_EXT2FS_EXT2_MOUNT_H_ */

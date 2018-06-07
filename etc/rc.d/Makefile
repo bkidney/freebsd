@@ -21,6 +21,7 @@ FILES=	DAEMON \
 	${_bluetooth} \
 	bridge \
 	${_bthidd} \
+	cfumass \
 	cleanvar \
 	cleartmp \
 	cron \
@@ -29,6 +30,7 @@ FILES=	DAEMON \
 	defaultroute \
 	devd \
 	devfs \
+	devmatch \
 	dhclient \
 	dmesg \
 	dumpon \
@@ -47,7 +49,6 @@ FILES=	DAEMON \
 	ip6addrctl \
 	ipfilter \
 	ipfs \
-	ipfw \
 	ipmon \
 	ipnat \
 	ipsec \
@@ -101,6 +102,7 @@ FILES=	DAEMON \
 	rpcbind \
 	rtadvd \
 	rtsold \
+	rwho \
 	savecore \
 	securelevel \
 	serial \
@@ -159,14 +161,6 @@ APM+=		apmd
 APMPACKAGE=	apm
 .endif
 
-.if ${MK_ATM} != "no"
-FILESGROUPS+=	ATM
-ATM+=		atm1
-ATM+=		atm2
-ATM+=		atm3
-ATMPACKAGE=	atm
-.endif
-
 .if ${MK_AUTOFS} != "no"
 FILES+=		automount
 FILES+=		automountd
@@ -212,6 +206,13 @@ HASTPACKAGE=	hast
 
 .if ${MK_INETD} != "no"
 FILES+=		inetd
+.endif
+
+.if ${MK_IPFW} != "no"
+FILES+=		ipfw
+.if ${MK_NETGRAPH} != "no"
+FILES+=		ipfw_netflow
+.endif
 .endif
 
 .if ${MK_ISCSI} != "no"
@@ -271,12 +272,6 @@ SSHPACKAGE=	ssh
 
 .if ${MK_PF} != "no"
 FILES+=		ftp-proxy
-.endif
-
-.if ${MK_RCMDS} != "no"
-FILESGROUPS+=	RCMDS
-RCMDS+=		rwho
-RCMDSPACKAGE=	rcmds
 .endif
 
 .if ${MK_ROUTED} != "no"

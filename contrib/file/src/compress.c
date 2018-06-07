@@ -35,7 +35,7 @@
 #include "file.h"
 
 #ifndef lint
-FILE_RCSID("@(#)$File: compress.c,v 1.100 2016/10/24 18:02:17 christos Exp $")
+FILE_RCSID("@(#)$File: compress.c,v 1.106 2017/11/02 20:25:39 christos Exp $")
 #endif
 
 #include "magic.h"
@@ -62,7 +62,7 @@ typedef void (*sig_t)(int);
 #if defined(HAVE_SYS_TIME_H)
 #include <sys/time.h>
 #endif
-#if defined(HAVE_ZLIB_H)
+#if defined(HAVE_ZLIB_H) && defined(ZLIBSUPPORT)
 #define BUILTIN_DECOMPRESS
 #include <zlib.h>
 #endif
@@ -83,6 +83,7 @@ int tty = -1;
 /*
  * The following python code is not really used because ZLIBSUPPORT is only
  * defined if we have a built-in zlib, and the built-in zlib handles that.
+ * That is not true for android where we have zlib.h and not -lz.
  */
 static const char zlibcode[] =
     "import sys, zlib; sys.stdout.write(zlib.decompress(sys.stdin.read()))";
@@ -93,7 +94,7 @@ static int
 zlibcmp(const unsigned char *buf)
 {
 	unsigned short x = 1;
-	unsigned char *s = (unsigned char *)&x;
+	unsigned char *s = CAST(unsigned char *, CAST(void *, &x));
 
 	if ((buf[0] & 0xf) != 8 || (buf[0] & 0x80) != 0)
 		return 0;
@@ -183,8 +184,7 @@ static int makeerror(unsigned char **, size_t *, const char *, ...)
 private const char *methodname(size_t);
 
 protected int
-file_zmagic(struct magic_set *ms, int fd, const char *name,
-    const unsigned char *buf, size_t nbytes)
+file_zmagic(struct magic_set *ms, const struct buffer *b, const char *name)
 {
 	unsigned char *newbuf = NULL;
 	size_t i, nsz;
@@ -192,6 +192,9 @@ file_zmagic(struct magic_set *ms, int fd, const char *name,
 	file_pushbuf_t *pb;
 	int urv, prv, rv = 0;
 	int mime = ms->flags & MAGIC_MIME;
+	int fd = b->fd;
+	const unsigned char *buf = b->fbuf;
+	size_t nbytes = b->flen;
 #ifdef HAVE_SIGNAL_H
 	sig_t osigpipe;
 #endif
@@ -497,7 +500,7 @@ uncompresszlib(const unsigned char *old, unsigned char **newch,
 	z.next_in = CCAST(Bytef *, old);
 	z.avail_in = CAST(uint32_t, *n);
 	z.next_out = *newch;
-	z.avail_out = bytes_max;
+	z.avail_out = CAST(unsigned int, bytes_max);
 	z.zalloc = Z_NULL;
 	z.zfree = Z_NULL;
 	z.opaque = Z_NULL;
@@ -632,7 +635,7 @@ filter_error(unsigned char *ubuf, ssize_t n)
 		while (isspace((unsigned char)*p))
 			p++;
 		n = strlen(p);
-		memmove(ubuf, p, n + 1);
+		memmove(ubuf, p, CAST(size_t, n + 1));
 	}
 	DPRINTF("Filter error after[[[%s]]]\n", (char *)ubuf);
 	if (islower(*ubuf))
@@ -688,7 +691,7 @@ uncompressbuf(int fd, size_t bytes_max, size_t method, const unsigned char *old,
 		}
 		
 		for (i = 0; i < __arraycount(fdp); i++)
-			copydesc(i, fdp[i]);
+			copydesc(CAST(int, i), fdp[i]);
 
 		(void)execvp(compr[method].argv[0],
 		    (char *const *)(intptr_t)compr[method].argv);
@@ -748,9 +751,9 @@ err:
 		rv = makeerror(newch, n, "Wait failed, %s", strerror(errno));
 		DPRINTF("Child wait return %#x\n", status);
 	} else if (!WIFEXITED(status)) {
-		DPRINTF("Child not exited (0x%x)\n", status);
+		DPRINTF("Child not exited (%#x)\n", status);
 	} else if (WEXITSTATUS(status) != 0) {
-		DPRINTF("Child exited (0x%d)\n", WEXITSTATUS(status));
+		DPRINTF("Child exited (%#x)\n", WEXITSTATUS(status));
 	}
 
 	closefd(fdp[STDIN_FILENO], 0);

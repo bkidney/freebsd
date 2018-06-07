@@ -57,7 +57,9 @@ static void ioctl_table_fill() {
   _(SIOCGIFCONF, CUSTOM, 0);
   _(SIOCGPGRP, WRITE, sizeof(int));
   _(SIOCSPGRP, READ, sizeof(int));
+#if !SANITIZER_SOLARIS
   _(TIOCCONS, NONE, 0);
+#endif
   _(TIOCEXCL, NONE, 0);
   _(TIOCGETD, WRITE, sizeof(int));
   _(TIOCGPGRP, WRITE, pid_t_sz);
@@ -583,7 +585,8 @@ static void ioctl_common_pre(void *ctx, const ioctl_desc *desc, int d,
     return;
   if (request == IOCTL_SIOCGIFCONF) {
     struct __sanitizer_ifconf *ifc = (__sanitizer_ifconf *)arg;
-    COMMON_INTERCEPTOR_READ_RANGE(ctx, &ifc->ifc_len, sizeof(ifc->ifc_len));
+    COMMON_INTERCEPTOR_READ_RANGE(ctx, (char*)&ifc->ifc_len,
+                                  sizeof(ifc->ifc_len));
   }
 }
 

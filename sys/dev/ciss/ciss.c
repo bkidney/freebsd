@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ *
  * Copyright (c) 2001 Michael Smith
  * Copyright (c) 2004 Paul Saab
  * All rights reserved.
@@ -358,7 +360,7 @@ static struct
     { 0x103C, 0x21C8, CISS_BOARD_SA5,   "HP Smart Array H241" },
     { 0x103C, 0x21CA, CISS_BOARD_SA5,   "HP Smart Array P246br" },
     { 0x103C, 0x21CB, CISS_BOARD_SA5,   "HP Smart Array P840" },
-    { 0x103C, 0x21CC, CISS_BOARD_SA5,   "HP Smart Array TBD" },
+    { 0x103C, 0x21CC, CISS_BOARD_SA5,   "HP Smart Array P542d" },
     { 0x103C, 0x21CD, CISS_BOARD_SA5,   "HP Smart Array P240nr" },
     { 0x103C, 0x21CE, CISS_BOARD_SA5,   "HP Smart Array H240nr" },
     { 0, 0, 0, NULL }
@@ -3026,11 +3028,11 @@ ciss_cam_action(struct cam_sim *sim, union ccb *ccb)
 	cpi->max_target = sc->ciss_cfg->max_logical_supported;
 	cpi->max_lun = 0;		/* 'logical drive' channel only */
 	cpi->initiator_id = sc->ciss_cfg->max_logical_supported;
-	strncpy(cpi->sim_vid, "FreeBSD", SIM_IDLEN);
-        strncpy(cpi->hba_vid, "msmith@freebsd.org", HBA_IDLEN);
-        strncpy(cpi->dev_name, cam_sim_name(sim), DEV_IDLEN);
-        cpi->unit_number = cam_sim_unit(sim);
-        cpi->bus_id = cam_sim_bus(sim);
+	strlcpy(cpi->sim_vid, "FreeBSD", SIM_IDLEN);
+	strlcpy(cpi->hba_vid, "CISS", HBA_IDLEN);
+	strlcpy(cpi->dev_name, cam_sim_name(sim), DEV_IDLEN);
+	cpi->unit_number = cam_sim_unit(sim);
+	cpi->bus_id = cam_sim_bus(sim);
 	cpi->base_transfer_speed = 132 * 1024;	/* XXX what to set this to? */
 	cpi->transport = XPORT_SPI;
 	cpi->transport_version = 2;
