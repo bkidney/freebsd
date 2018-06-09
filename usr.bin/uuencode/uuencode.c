@@ -48,12 +48,14 @@ __FBSDID("$FreeBSD$");
  *
  * Encode a file so it can be mailed to a remote system.
  */
+#include <sys/capsicum.h>
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 
 #include <netinet/in.h>
 
+#include <capsicum_helpers.h>
 #include <err.h>
 #include <libgen.h>
 #include <resolv.h>
@@ -61,6 +63,7 @@ __FBSDID("$FreeBSD$");
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
 
 static void encode(void);
 static void base64_encode(void);
@@ -127,8 +130,20 @@ main(int argc, char *argv[])
 		output = fopen(outfile, "w+");
 		if (output == NULL)
 			err(1, "unable to open %s for output", outfile);
+
+		cap_rights_t out_rights;
+		cap_rights_init(&out_rights, CAP_FSTAT | CAP_WRITE | CAP_SEEK );
+		if (cap_rights_limit( output->_file, &out_rights ))
+			err(1, "unable to limit rights for %s", outfile);
 	} else
 		output = stdout;
+
+	if (caph_limit_stdio() != 0)
+		errx(1, "Failed to limit stdio");
+
+	if (cap_enter() < 0 && errno != ENOSYS)
+			err(1, "unable to enter capability mode");
+
 	if (base64)
 		base64_encode();
 	else
