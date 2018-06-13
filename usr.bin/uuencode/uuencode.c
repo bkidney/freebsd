@@ -81,6 +81,7 @@ main(int argc, char *argv[])
 	int base64;
 	int ch;
 	char *outfile;
+	cap_rights_t out_rights;
 
 	base64 = 0;
 	outfile = NULL;
@@ -131,9 +132,7 @@ main(int argc, char *argv[])
 		if (output == NULL)
 			err(1, "unable to open %s for output", outfile);
 
-		cap_rights_t out_rights;
-		cap_rights_init(&out_rights, CAP_FSTAT | CAP_WRITE | CAP_SEEK );
-		if (cap_rights_limit( output->_file, &out_rights ))
+		if (caph_limit_stream(fileno(output), CAP_WRITE) != 0)
 			err(1, "unable to limit rights for %s", outfile);
 	} else
 		output = stdout;
@@ -141,7 +140,7 @@ main(int argc, char *argv[])
 	if (caph_limit_stdio() != 0)
 		errx(1, "Failed to limit stdio");
 
-	if (cap_enter() < 0 && errno != ENOSYS)
+	if (caph_enter() < 0 && errno != ENOSYS)
 			err(1, "unable to enter capability mode");
 
 	if (base64)
